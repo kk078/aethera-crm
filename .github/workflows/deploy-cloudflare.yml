@@ -1,0 +1,41 @@
+﻿name: Deploy Cloudflare CRM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install wrangler
+        run: npm install -g wrangler@3.x
+
+      - name: Deploy backend (Workers)
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        run: wrangler deploy
+
+      - name: Build frontend
+        working-directory: ./apps/frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Deploy frontend (Pages)
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+        working-directory: ./apps/frontend
+        run: wrangler pages deploy dist --project-name=aera-crm-frontend
+
+      - name: Deployment done
+        run: echo "Cloudflare deployment completed."
