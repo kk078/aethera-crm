@@ -346,11 +346,17 @@ emailsRoutes.post('/oauth/auth-url', async (c) => {
     config[r.key] = r.value;
   }
 
-  const clientId = config.gmail_oauth_client_id;
-  const redirectUri = config.gmail_oauth_redirect_uri || 'urn:ietf:wg:oauth:2.0:oob';
+  // Use default config if not found in DB
+  const clientId = config.gmail_oauth_client_id || DEFAULT_OAUTH_CONFIG.client_id;
+  const redirectUri = config.gmail_oauth_redirect_uri || DEFAULT_OAUTH_CONFIG.redirect_uri;
+
+  if (!clientId) {
+    throw new HTTPException(400, { message: 'Gmail OAuth client ID not configured. Please save OAuth configuration first.' });
+  }
+
   const scope = 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile';
 
-  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&access_type=offline&prompt=consent`;
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&access_type=offline&prompt=consent`;
 
   return c.json({
     data: { auth_url: authUrl },
