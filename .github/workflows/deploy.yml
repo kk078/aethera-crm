@@ -18,24 +18,22 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Configure Wrangler with API Token
-        run: |
-          mkdir -p .wrangler
-          cat > .wrangler/config.json << EOF
-          {
-            "account_id": "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
-            "api_token": "${{ secrets.CLOUDFLARE_API_TOKEN }}",
-            "default_name": "aethera-crm-api"
-          }
-          EOF
-        working-directory: cloudflare/workers
-
       - name: Install dependencies
         run: cd cloudflare/workers && npm ci
 
-      - name: Deploy to Cloudflare Workers
-        run: npm run deploy
+      - name: Login to Cloudflare
+        run: |
+          echo "$CLOUDFLARE_API_TOKEN" > api_token.txt
+          npx wrangler login --auth-token "$(cat api_token.txt)"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         working-directory: cloudflare/workers
+
+      - name: Deploy to Cloudflare Workers
+        run: npx wrangler deploy
+        working-directory: cloudflare/workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
   deploy-frontend:
     runs-on: ubuntu-latest
@@ -48,21 +46,19 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Configure Wrangler with API Token
-        run: |
-          mkdir -p .wrangler
-          cat > .wrangler/config.json << EOF
-          {
-            "account_id": "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
-            "api_token": "${{ secrets.CLOUDFLARE_API_TOKEN }}",
-            "default_name": "aethera-crm"
-          }
-          EOF
-        working-directory: cloudflare/pages
-
       - name: Install dependencies
         run: cd cloudflare/pages && npm ci
 
-      - name: Build and Deploy to Cloudflare Pages
-        run: npm run publish
+      - name: Login to Cloudflare
+        run: |
+          echo "$CLOUDFLARE_API_TOKEN" > api_token.txt
+          npx wrangler login --auth-token "$(cat api_token.txt)"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         working-directory: cloudflare/pages
+
+      - name: Build and Deploy to Cloudflare Pages
+        run: npx wrangler pages deploy dist --project-name aethera-crm
+        working-directory: cloudflare/pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
