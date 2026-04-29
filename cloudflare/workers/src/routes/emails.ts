@@ -4,6 +4,56 @@ import { createEmailSchema, emailTemplateSchema, gmailRelayConfigSchema, gmailOA
 import { generateId, calculatePagination, isValidEmail } from '../utils/helpers';
 import type { AppEnv } from '../types';
 
+// Default Gmail OAuth credentials (pre-configured)
+const DEFAULT_OAUTH_CONFIG = {
+  client_id: '280155650451-afhvc54egr4tm8tv24utp6mfcqe8qbku',
+  client_secret: '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',
+  redirect_uri: 'urn:ietf:wg:oauth:2.0:oob',
+  from_email: 'info@aetherahealthcare.com',
+  from_name: 'Aethera Healthcare',
+  use_oauth: true,
+};
+
+// Email templates for outreach
+const DEFAULT_EMAIL_TEMPLATES = [
+  {
+    name: 'Outreach - Initial Contact',
+    subject: 'Introducing Aethera Healthcare Provider Solutions',
+    body: '<p>Hi {{name}},</p><p>I hope this email finds you well. My name is [Your Name] with Aethera Healthcare, and I\'m reaching out to introduce our comprehensive provider relationship management platform.</p><p>We help healthcare practices like yours streamline provider onboarding, manage credentialing, and build stronger relationships with network providers.</p><p>Would you be open to a brief 15-minute call this week to discuss how we can help?</p><p>Best regards,</p><p>[Your Name]<br>Aethera Healthcare</p>',
+    category: 'outreach',
+  },
+  {
+    name: 'Outreach - Follow Up',
+    subject: 'Following Up on Previous Communication',
+    body: '<p>Hi {{name}},</p><p>I wanted to follow up on my previous email regarding Aethera Healthcare\'s provider solutions. I understand you may be busy, but I believe our platform could be a valuable addition to your practice.</p><p>Is there a better time for you to discuss this further?</p><p>Looking forward to hearing from you.</p><p>Best regards,</p><p>[Your Name]</p>',
+    category: 'follow-up',
+  },
+  {
+    name: 'Outreach - Value Proposition',
+    subject: 'How Aethera Can Save You Time and Improve Outcomes',
+    body: '<p>Hi {{name}},</p><p>I wanted to share how Aethera Healthcare can specifically help with your practice:</p><ul><li><strong>Efficient Provider Onboarding:</strong> Reduce onboarding time by 50%</li><li><strong>Automated Credentialing:</strong> Keep your provider directory accurate and up-to-date</li><li><strong>Enhanced Communication:</strong> Build stronger relationships with network providers</li></ul><p>Would you be interested in a personalized demo?</p><p>Best regards,</p><p>[Your Name]<br>Aethera Healthcare</p>',
+    category: 'outreach',
+  },
+  {
+    name: 'Follow-up - No Response',
+    subject: 'Checking In - Still Available to Help',
+    body: '<p>Hi {{name}},</p><p>I\'ve tried reaching out a couple of times and wanted to check if this is still the best email address for you? Or perhaps now isn\'t a good time to discuss provider solutions?</p><p>If you prefer, I can reach out at a later date.</p><p>Thanks for your time!</p><p>Best regards,</p><p>[Your Name]</p>',
+    category: 'follow-up',
+  },
+  {
+    name: 'General - Calendar Invite',
+    subject: 'Scheduling Our Discussion',
+    body: '<p>Hi {{name}},</p><p>Thanks for your response! I\'d love to schedule a brief call to discuss how Aethera can help your practice.</p><p>Here are some available times this week:</p><ul><li>Monday: 10:00 AM - 2:00 PM</li><li>Wednesday: 9:00 AM - 3:00 PM</li><li>Friday: 11:00 AM - 4:00 PM</li></ul><p>Which time works best for you?</p><p>Best regards,</p><p>[Your Name]</p>',
+    category: 'general',
+  },
+  {
+    name: 'Post-Call Follow-up',
+    subject: 'Thanks for Our Conversation - Next Steps',
+    body: '<p>Hi {{name}},</p><p>Thank you for taking the time to speak with me today. I enjoyed our conversation about [specific topic discussed].</p><p>As we discussed, I\'ll [specific action item]. In the meantime, if you have any questions, please don\'t hesitate to reach out.</p><p>Looking forward to next steps!</p><p>Best regards,</p><p>[Your Name]</p>',
+    category: 'general',
+  },
+];
+
 export const emailsRoutes = new Hono<AppEnv>();
 
 // ───── Gmail Relay Configuration ─────
@@ -69,6 +119,81 @@ emailsRoutes.put('/smtp/config', async (c) => {
   }
 
   return c.json({ message: 'Gmail relay configuration saved successfully' });
+});
+
+// Setup default Gmail OAuth config and email templates
+emailsRoutes.post('/setup', async (c) => {
+  const db = (c as any).env.DB as any;
+  const query = c.req.query();
+
+  // Check if already set up
+  let stmt: any = db.prepare("SELECT value FROM settings WHERE key = 'gmail_oauth_client_id'");
+  const existing = await stmt.first();
+
+  if (existing && query.force !== 'true') {
+    return c.json({
+      message: 'Already configured',
+      data: { already_setup: true },
+    });
+  }
+
+  // Save OAuth config
+  const oauthPairs: Record<string, string> = {
+    gmail_oauth_client_id: DEFAULT_OAUTH_CONFIG.client_id,
+    gmail_oauth_client_secret: DEFAULT_OAUTH_CONFIG.client_secret,
+    gmail_oauth_redirect_uri: DEFAULT_OAUTH_CONFIG.redirect_uri,
+    gmail_oauth_from_email: DEFAULT_OAUTH_CONFIG.from_email,
+    gmail_oauth_from_name: DEFAULT_OAUTH_CONFIG.from_name,
+    gmail_oauth_use_oauth: 'true',
+  };
+
+  for (const [key, value] of Object.entries(oauthPairs)) {
+    stmt = db.prepare("SELECT id FROM settings WHERE key = ?");
+    stmt = stmt.bind(key);
+    const existing = await stmt.first();
+
+    if (existing) {
+      stmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
+      stmt = stmt.bind(value);
+      stmt = stmt.bind(key);
+      await stmt.run();
+    } else {
+      stmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')") as any;
+      stmt = stmt.bind(generateId());
+      stmt = stmt.bind(key);
+      stmt = stmt.bind(value);
+      await stmt.run();
+    }
+  }
+
+  // Insert default email templates
+  for (const template of DEFAULT_EMAIL_TEMPLATES) {
+    let templateStmt: any = db.prepare("SELECT id FROM email_templates WHERE name = ?");
+    templateStmt = templateStmt.bind(template.name);
+    const existingTemplate = await templateStmt.first();
+
+    if (!existingTemplate) {
+      const templateId = generateId();
+      let insertStmt: any = db.prepare(`
+        INSERT INTO email_templates (id, name, subject, body, category, owner_id)
+        VALUES (?, ?, ?, ?, ?, 'system')
+      `);
+      insertStmt = insertStmt.bind(templateId);
+      insertStmt = insertStmt.bind(template.name);
+      insertStmt = insertStmt.bind(template.subject);
+      insertStmt = insertStmt.bind(template.body);
+      insertStmt = insertStmt.bind(template.category);
+      await insertStmt.run();
+    }
+  }
+
+  return c.json({
+    message: 'Setup completed successfully',
+    data: {
+      oauth_configured: true,
+      templates_count: DEFAULT_EMAIL_TEMPLATES.length,
+    },
+  });
 });
 
 // Test Gmail relay config

@@ -52,11 +52,25 @@ const Email: React.FC = () => {
   const [templateModalVisible, setTemplateModalVisible] = useState(false);
   const [oauthConfigModalVisible, setOauthConfigModalVisible] = useState(false);
   const [authCodeModalVisible, setAuthCodeModalVisible] = useState(false);
+  const [setupModalVisible, setSetupModalVisible] = useState(false);
   const [oauthCode, setOauthCode] = useState('');
   const [authUrl, setAuthUrl] = useState('');
   const [templateForm] = Form.useForm();
   const [composeForm] = Form.useForm();
   const [oauthForm] = Form.useForm();
+
+  // Setup mutation for pre-configuring Gmail OAuth
+  const setupMutation = useMutation({
+    mutationFn: () => emailsAPI.setup(),
+    onSuccess: (data) => {
+      message.success('Gmail setup completed successfully');
+      queryClient.invalidateQueries({ queryKey: ['oauth-config'] });
+      setSetupModalVisible(false);
+    },
+    onError: (error: any) => {
+      message.error(`Setup failed: ${error.message}`);
+    },
+  });
 
   const { data: emailsData, isLoading, refetch: refetchEmails } = useQuery({
     queryKey: ['emails', activeTab],
@@ -268,6 +282,11 @@ const Email: React.FC = () => {
           <Button icon={<SettingOutlined />} onClick={() => setOauthConfigModalVisible(true)}>
             Gmail Settings
           </Button>
+          {oauthConfig && !isOAuthConnected && (
+            <Button icon={<GoogleOutlined />} onClick={() => setSetupModalVisible(true)}>
+              Setup Gmail
+            </Button>
+          )}
           <Button icon={<FileTextOutlined />} onClick={() => setTemplateModalVisible(true)}>
             Templates ({templatesList.length})
           </Button>
@@ -553,6 +572,49 @@ const Email: React.FC = () => {
             loading={exchangeTokenMutation.isPending}
           >
             Exchange Code for Token
+          </Button>
+        </div>
+      </Modal>
+
+      {/* Setup Modal */}
+      <Modal
+        title={<span><GoogleOutlined /> Setup Gmail Integration</span>}
+        open={setupModalVisible}
+        onCancel={() => setSetupModalVisible(false)}
+        footer={null}
+        width={500}
+      >
+        <Alert
+          message="Pre-configured Gmail OAuth"
+          description="Your Gmail OAuth credentials have been pre-configured in the system. Simply click Setup to complete the configuration."
+          type="info"
+          style={{ marginBottom: 16 }}
+        />
+
+        <Button
+          type="primary"
+          onClick={() => setupMutation.mutate()}
+          loading={setupMutation.isPending}
+          icon={<GoogleOutlined />}
+          style={{ width: '100%' }}
+        >
+          Setup Gmail OAuth
+        </Button>
+
+        <Divider />
+
+        <Paragraph type="secondary">
+          What happens next:
+        </Paragraph>
+        <ul>
+          <li>OAuth configuration will be saved to the database</li>
+          <li>Pre-built email templates will be added</li>
+          <li>You can configure your OAuth credentials in Gmail Settings if needed</li>
+        </ul>
+
+        <div style={{ marginTop: 16, textAlign: 'center' }}>
+          <Button onClick={() => setSetupModalVisible(false)}>
+            Cancel
           </Button>
         </div>
       </Modal>

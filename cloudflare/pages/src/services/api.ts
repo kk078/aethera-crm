@@ -150,6 +150,7 @@ export const emailsAPI = {
   getSmtpConfig: () => api.get('/emails/smtp/config'),
   saveSmtpConfig: (data: any) => api.put('/emails/smtp/config', data),
   testSmtp: (to: string) => api.post('/emails/smtp/test', { to }),
+  setup: () => api.post('/emails/setup', {}),
 
   // Gmail OAuth endpoints
   getOAuthConfig: () => api.get('/emails/oauth/config'),
