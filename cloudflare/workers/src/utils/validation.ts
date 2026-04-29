@@ -195,6 +195,18 @@ export const gmailRelayConfigSchema = z.object({
   use_relay: z.boolean().optional(),
 });
 
+// Gmail OAuth Config Schema
+export const gmailOAuthConfigSchema = z.object({
+  auth_url: z.string().optional(),
+  token_url: z.string().optional(),
+  client_id: z.string().min(1),
+  client_secret: z.string().min(1),
+  redirect_uri: z.string().url().optional(),
+  from_email: z.string().email().optional(),
+  from_name: z.string().optional(),
+  use_oauth: z.boolean().optional(),
+});
+
 // Twilio Config Schema
 export const twilioConfigSchema = z.object({
   account_sid: z.string().min(1),

@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
-import { Card, Typography, Table, Button, Space, Tag, Modal, Form, Input, Select, message, Badge, Tabs, Empty, Result, Spin, Divider, List } from 'antd';
-import { MailOutlined, SendOutlined, InboxOutlined, FileTextOutlined, PlusOutlined, DeleteOutlined, EyeOutlined, PhoneOutlined } from '@ant-design/icons';
+import React, { useState, useEffect } from 'react';
+import { Card, Typography, Table, Button, Space, Tag, Modal, Form, Input, Select, message, Badge, Tabs, Empty, Result, Spin, Divider, List, Row, Col, Alert } from 'antd';
+import { MailOutlined, SendOutlined, InboxOutlined, FileTextOutlined, PlusOutlined, DeleteOutlined, EyeOutlined, PhoneOutlined, SettingOutlined, GoogleOutlined, LinkOutlined, UserOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { emailsAPI } from '@services/api';
 import dayjs from 'dayjs';
@@ -36,16 +36,29 @@ interface EmailTemplate {
   created_at: string;
 }
 
+interface OAuthConfig {
+  client_id: string;
+  redirect_uri: string;
+  from_email: string;
+  from_name: string;
+  use_oauth: boolean;
+}
+
 const Email: React.FC = () => {
   const queryClient = useQueryClient();
   const [composeVisible, setComposeVisible] = useState(false);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [activeTab, setActiveTab] = useState('inbox');
   const [templateModalVisible, setTemplateModalVisible] = useState(false);
+  const [oauthConfigModalVisible, setOauthConfigModalVisible] = useState(false);
+  const [authCodeModalVisible, setAuthCodeModalVisible] = useState(false);
+  const [oauthCode, setOauthCode] = useState('');
+  const [authUrl, setAuthUrl] = useState('');
   const [templateForm] = Form.useForm();
   const [composeForm] = Form.useForm();
+  const [oauthForm] = Form.useForm();
 
-  const { data: emailsData, isLoading } = useQuery({
+  const { data: emailsData, isLoading, refetch: refetchEmails } = useQuery({
     queryKey: ['emails', activeTab],
     queryFn: async () => {
       const res = await emailsAPI.list({ direction: activeTab === 'sent' ? 'outbound' : 'inbound' });
@@ -61,6 +74,14 @@ const Email: React.FC = () => {
     },
   });
 
+  const { data: oauthConfigData } = useQuery({
+    queryKey: ['oauth-config'],
+    queryFn: async () => {
+      const res = await emailsAPI.getOAuthConfig();
+      return res;
+    },
+  });
+
   const emailsList = React.useMemo(() => {
     if (!emailsData) return [];
     const raw = (emailsData as any).data;
@@ -72,6 +93,11 @@ const Email: React.FC = () => {
     const raw = (templatesData as any).data;
     return Array.isArray(raw) ? raw : [];
   }, [templatesData]);
+
+  const oauthConfig = React.useMemo(() => {
+    if (!oauthConfigData) return null;
+    return (oauthConfigData as any).data as OAuthConfig;
+  }, [oauthConfigData]);
 
   const sendMutation = useMutation({
     mutationFn: (data: any) => emailsAPI.send(data),
@@ -106,6 +132,40 @@ const Email: React.FC = () => {
     onError: (error: any) => message.error(`Failed: ${error.message}`),
   });
 
+  const saveOAuthConfigMutation = useMutation({
+    mutationFn: (data: any) => emailsAPI.saveOAuthConfig(data),
+    onSuccess: () => {
+      message.success('Gmail OAuth configured successfully');
+      queryClient.invalidateQueries({ queryKey: ['oauth-config'] });
+      setOauthConfigModalVisible(false);
+    },
+    onError: (error: any) => message.error(`Failed: ${error.message}`),
+  });
+
+  const getAuthUrlMutation = useMutation({
+    mutationFn: () => emailsAPI.getAuthUrl(),
+    onSuccess: (data) => {
+      const url = (data as any).data?.auth_url;
+      if (url) {
+        setAuthUrl(url);
+        setAuthCodeModalVisible(true);
+      }
+    },
+    onError: (error: any) => message.error(`Failed to get auth URL: ${error.message}`),
+  });
+
+  const exchangeTokenMutation = useMutation({
+    mutationFn: (code: string) => emailsAPI.exchangeToken(code),
+    onSuccess: (data) => {
+      const userData = (data as any).data;
+      message.success(`Gmail connected: ${userData.email}`);
+      setAuthCodeModalVisible(false);
+      setOauthCode('');
+      queryClient.invalidateQueries({ queryKey: ['oauth-config'] });
+    },
+    onError: (error: any) => message.error(`Token exchange failed: ${error.message}`),
+  });
+
   const handleSend = (values: any) => {
     sendMutation.mutate({
       to: values.to,
@@ -118,12 +178,36 @@ const Email: React.FC = () => {
     createTemplateMutation.mutate(values);
   };
 
+  const handleSaveOAuthConfig = (values: any) => {
+    saveOAuthConfigMutation.mutate({
+      client_id: values.client_id,
+      client_secret: values.client_secret,
+      redirect_uri: values.redirect_uri,
+      from_email: values.from_email || 'info@aetherahealthcare.com',
+      from_name: values.from_name || 'Aethera Healthcare',
+      use_oauth: true,
+    });
+  };
+
+  const handleAuthCodeSubmit = () => {
+    if (oauthCode.trim()) {
+      exchangeTokenMutation.mutate(oauthCode.trim());
+    }
+  };
+
   const useTemplate = (template: EmailTemplate) => {
     composeForm.setFieldsValue({
       subject: template.subject,
       body: template.body,
     });
     setComposeVisible(true);
+  };
+
+  const renderEmailBody = (email: Email) => {
+    if (email.html_body) {
+      return <div dangerouslySetInnerHTML={{ __html: email.html_body }} />;
+    }
+    return <div style={{ whiteSpace: 'pre-wrap' }}>{email.body || '(no content)'}</div>;
   };
 
   const columns = [
@@ -170,6 +254,9 @@ const Email: React.FC = () => {
     },
   ];
 
+  // OAuth connection check
+  const isOAuthConnected = oauthConfig?.use_oauth && !!oauthConfig.client_id;
+
   return (
     <div className="page-container">
       <div className="page-header">
@@ -178,6 +265,9 @@ const Email: React.FC = () => {
           <Paragraph>Send emails and manage templates</Paragraph>
         </div>
         <Space>
+          <Button icon={<SettingOutlined />} onClick={() => setOauthConfigModalVisible(true)}>
+            Gmail Settings
+          </Button>
           <Button icon={<FileTextOutlined />} onClick={() => setTemplateModalVisible(true)}>
             Templates ({templatesList.length})
           </Button>
@@ -226,11 +316,7 @@ const Email: React.FC = () => {
           )}
           <Divider />
           <div style={{ whiteSpace: 'pre-wrap', padding: 16, background: '#f5f5f5', borderRadius: 4 }}>
-            {selectedEmail.html_body ? (
-              <div dangerouslySetInnerHTML={{ __html: selectedEmail.html_body }} />
-            ) : (
-              selectedEmail.body || '(no content)'
-            )}
+            {renderEmailBody(selectedEmail)}
           </div>
         </Card>
       )}
@@ -363,6 +449,112 @@ const Email: React.FC = () => {
             )}
           />
         )}
+      </Modal>
+
+      {/* Gmail OAuth Configuration Modal */}
+      <Modal
+        title={<span><GoogleOutlined /> Gmail OAuth Configuration</span>}
+        open={oauthConfigModalVisible}
+        onCancel={() => setOauthConfigModalVisible(false)}
+        footer={null}
+        width={500}
+      >
+        {isOAuthConnected ? (
+          <div>
+            <Alert
+              message="Gmail is connected"
+              description={
+                <Text>
+                  Email: <strong>{oauthConfig?.from_email}</strong><br />
+                  Status: <Tag color="green">Active</Tag>
+                </Text>
+              }
+              type="success"
+              style={{ marginBottom: 16 }}
+            />
+            <Button icon={<GoogleOutlined />} onClick={() => getAuthUrlMutation.mutate()}>
+              Re-authenticate
+            </Button>
+          </div>
+        ) : (
+          <Form form={oauthForm} layout="vertical" onFinish={handleSaveOAuthConfig}>
+            <Alert
+              message="Configure Gmail OAuth"
+              description="Enter your Google Cloud credentials to enable email sending via Gmail API."
+              type="info"
+              style={{ marginBottom: 16 }}
+            />
+            <Form.Item name="client_id" label="Client ID" rules={[{ required: true }]}>
+              <Input placeholder="Enter your Google Cloud Client ID" />
+            </Form.Item>
+            <Form.Item name="client_secret" label="Client Secret" rules={[{ required: true }]}>
+              <Input.Password placeholder="Enter your Google Cloud Client Secret" />
+            </Form.Item>
+            <Form.Item name="redirect_uri" label="Redirect URI">
+              <Input placeholder="Enter redirect URI (default: urn:ietf:wg:oauth:2.0:oob)" />
+            </Form.Item>
+            <Form.Item>
+              <Space>
+                <Button type="primary" htmlType="submit" icon={<LinkOutlined />}>
+                  Save Configuration
+                </Button>
+                <Button icon={<GoogleOutlined />} onClick={() => getAuthUrlMutation.mutate()}>
+                  Generate Auth URL
+                </Button>
+              </Space>
+            </Form.Item>
+          </Form>
+        )}
+      </Modal>
+
+      {/* OAuth Authorization Code Modal */}
+      <Modal
+        title="Gmail Authorization"
+        open={authCodeModalVisible}
+        onCancel={() => setAuthCodeModalVisible(false)}
+        footer={null}
+        width={500}
+      >
+        <div style={{ textAlign: 'center' }}>
+          <GoogleOutlined style={{ fontSize: 48, color: '#4285F4', marginBottom: 16 }} />
+          <Paragraph>Sign in to Gmail to authorize Aethera CRM</Paragraph>
+
+          {authUrl && (
+            <div style={{ marginBottom: 16 }}>
+              <Button type="primary" href={authUrl} target="_blank">
+                Open Gmail Authorization Page
+              </Button>
+            </div>
+          )}
+
+          <Paragraph type="secondary">
+            If the button above doesn't work, open this URL in your browser:
+          </Paragraph>
+
+          <Card size="small" style={{ marginBottom: 16, wordBreak: 'break-all' }}>
+            <Text copyable>{authUrl}</Text>
+          </Card>
+
+          <Paragraph type="secondary">
+            After authorizing, paste the authorization code below:
+          </Paragraph>
+
+          <Input
+            placeholder="Enter authorization code"
+            value={oauthCode}
+            onChange={(e) => setOauthCode(e.target.value)}
+            style={{ marginBottom: 16 }}
+          />
+
+          <Button
+            type="primary"
+            disabled={!oauthCode.trim()}
+            onClick={handleAuthCodeSubmit}
+            loading={exchangeTokenMutation.isPending}
+          >
+            Exchange Code for Token
+          </Button>
+        </div>
       </Modal>
     </div>
   );

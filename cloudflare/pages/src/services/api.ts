@@ -150,6 +150,13 @@ export const emailsAPI = {
   getSmtpConfig: () => api.get('/emails/smtp/config'),
   saveSmtpConfig: (data: any) => api.put('/emails/smtp/config', data),
   testSmtp: (to: string) => api.post('/emails/smtp/test', { to }),
+
+  // Gmail OAuth endpoints
+  getOAuthConfig: () => api.get('/emails/oauth/config'),
+  saveOAuthConfig: (data: any) => api.put('/emails/oauth/config', data),
+  getAuthUrl: () => api.post('/emails/oauth/auth-url', {}),
+  exchangeToken: (code: string) => api.post('/emails/oauth/token', { code }),
+  refreshToken: () => api.post('/emails/oauth/refresh', {}),
 };
 
 export const twilioAPI = {

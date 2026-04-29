@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Typography, Form, Input, Button, message, Divider, Switch, Space, Spin, Alert, Tag, Collapse } from 'antd';
-import { MailOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, ApiOutlined, PhoneOutlined, RobotOutlined } from '@ant-design/icons';
+import { Card, Typography, Form, Input, Button, message, Divider, Switch, Space, Spin, Alert, Tag, Collapse, Modal } from 'antd';
+import { MailOutlined, CheckCircleOutlined, CloseCircleOutlined, SettingOutlined, ApiOutlined, PhoneOutlined, RobotOutlined, GoogleOutlined, LinkOutlined } from '@ant-design/icons';
 import { emailsAPI, twilioAPI } from '@services/api';
 
 const { Title, Text, Paragraph } = Typography;
@@ -9,14 +9,19 @@ const Settings: React.FC = () => {
   const [relayForm] = Form.useForm();
   const [twilioForm] = Form.useForm();
   const [profileForm] = Form.useForm();
+  const [oauthForm] = Form.useForm();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingTwilio, setSavingTwilio] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [oauthConfig, setOauthConfig] = useState<{ client_id: string; from_email: string; from_name: string; use_oauth: boolean } | null>(null);
+  const [oauthModalVisible, setOauthModalVisible] = useState(false);
+  const [oauthAuthUrl, setOauthAuthUrl] = useState('');
+  const [oauthCode, setOauthCode] = useState('');
 
   useEffect(() => {
-    Promise.all([loadRelayConfig(), loadTwilioConfig()]).finally(() => setLoading(false));
+    Promise.all([loadRelayConfig(), loadTwilioConfig(), loadOAuthConfig()]).finally(() => setLoading(false));
   }, []);
 
   const loadRelayConfig = async () => {
@@ -42,6 +47,20 @@ const Settings: React.FC = () => {
         auth_token: config.auth_token || '',
         phone_number: config.phone_number || '',
         enabled: config.enabled || false,
+      });
+    } catch {}
+  };
+
+  const loadOAuthConfig = async () => {
+    try {
+      const res = await emailsAPI.getOAuthConfig();
+      const config = res.data;
+      setOauthConfig(config);
+      oauthForm.setFieldsValue({
+        client_id: config.client_id || '',
+        from_email: config.from_email || 'info@aetherahealthcare.com',
+        from_name: config.from_name || 'Aethera Healthcare',
+        use_oauth: config.use_oauth || false,
       });
     } catch {}
   };
@@ -99,6 +118,51 @@ const Settings: React.FC = () => {
 
   const handleSaveProfile = async (values: any) => {
     message.success('Profile saved');
+  };
+
+  const handleSaveOAuth = async (values: any) => {
+    setSaving(true);
+    try {
+      await emailsAPI.saveOAuthConfig({
+        client_id: values.client_id,
+        client_secret: values.client_secret || '',
+        redirect_uri: values.redirect_uri || '',
+        from_email: values.from_email || 'info@aetherahealthcare.com',
+        from_name: values.from_name || 'Aethera Healthcare',
+        use_oauth: true,
+      });
+      message.success('Gmail OAuth configuration saved');
+      loadOAuthConfig();
+      setOauthModalVisible(false);
+    } catch (e: any) {
+      message.error(`Save failed: ${e.message}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleGetAuthUrl = async () => {
+    try {
+      const res = await emailsAPI.getAuthUrl();
+      setOauthAuthUrl(res.data?.auth_url || '');
+      setOauthModalVisible(true);
+    } catch (e: any) {
+      message.error(`Failed to get auth URL: ${e.message}`);
+    }
+  };
+
+  const handleExchangeToken = async () => {
+    if (!oauthCode.trim()) return;
+    try {
+      await emailsAPI.exchangeToken(oauthCode.trim());
+      message.success('Gmail connected successfully');
+      setOauthCode('');
+      setOauthAuthUrl('');
+      loadOAuthConfig();
+      setOauthModalVisible(false);
+    } catch (e: any) {
+      message.error(`Token exchange failed: ${e.message}`);
+    }
   };
 
   if (loading) {
@@ -228,6 +292,96 @@ const Settings: React.FC = () => {
         </Form>
       </Card>
 
+      {/* Gmail OAuth Configuration Card */}
+      <Card title={<Space><GoogleOutlined /> Gmail OAuth Configuration</Space>} style={{ marginBottom: 24 }}>
+        <Paragraph type="secondary">
+          Configure direct Gmail API integration using OAuth 2.0. This enables sending emails directly from{' '}
+          <Text strong>info@aetherahealthcare.com</Text> without needing a separate relay worker.
+        </Paragraph>
+
+        {oauthConfig?.use_oauth && oauthConfig.client_id ? (
+          <div>
+            <Alert
+              message="Gmail is configured"
+              description={
+                <Text>
+                  From: <strong>{oauthConfig.from_email || 'info@aetherahealthcare.com'}</strong><br />
+                  Status: <Tag color="green">Active</Tag>
+                </Text>
+              }
+              type="success"
+              style={{ marginBottom: 16 }}
+            />
+            <Space>
+              <Button icon={<GoogleOutlined />} onClick={handleGetAuthUrl}>
+                Re-authorize
+              </Button>
+              <Button danger onClick={() => {
+                Modal.confirm({
+                  title: 'Reset Gmail OAuth?',
+                  content: 'This will remove your Gmail OAuth configuration.',
+                  async onOk() {
+                    oauthForm.setFieldsValue({ client_id: '', client_secret: '' });
+                    setOauthConfig(null);
+                    message.success('Gmail OAuth configuration reset');
+                    loadOAuthConfig();
+                  },
+                });
+              }}>
+                Reset Configuration
+              </Button>
+            </Space>
+          </div>
+        ) : (
+          <div>
+            <Alert
+              message="Configure Gmail OAuth"
+              description="Enter your Google Cloud credentials to enable direct email sending via Gmail API."
+              type="info"
+              style={{ marginBottom: 16 }}
+            />
+
+            <Form form={oauthForm} layout="vertical" onFinish={handleSaveOAuth}>
+              <Form.Item
+                name="client_id"
+                label="Client ID"
+                rules={[{ required: true }]}
+                extra="Get this from Google Cloud Console: https://console.cloud.google.com/apis/credentials"
+              >
+                <Input placeholder="Enter your Google Cloud Client ID" />
+              </Form.Item>
+
+              <Form.Item
+                name="client_secret"
+                label="Client Secret"
+                rules={[{ required: true }]}
+                extra="Get this from Google Cloud Console alongside your Client ID"
+              >
+                <Input.Password placeholder="Enter your Google Cloud Client Secret" />
+              </Form.Item>
+
+              <Form.Item
+                name="redirect_uri"
+                label="Redirect URI"
+                extra="For browser-based apps, use: urn:ietf:wg:oauth:2.0:oob"
+              >
+                <Input placeholder="urn:ietf:wg:oauth:2.0:oob" />
+              </Form.Item>
+
+              <Divider />
+              <Space>
+                <Button type="primary" htmlType="submit" loading={saving} icon={<LinkOutlined />}>
+                  Save Configuration
+                </Button>
+                <Button icon={<GoogleOutlined />} onClick={handleGetAuthUrl}>
+                  Generate Auth URL
+                </Button>
+              </Space>
+            </Form>
+          </div>
+        )}
+      </Card>
+
       {/* Profile Card */}
       <Card title="Profile Settings" style={{ marginBottom: 24 }}>
         <Form form={profileForm} layout="vertical" onFinish={handleSaveProfile}>
@@ -245,6 +399,52 @@ const Settings: React.FC = () => {
         </Form>
       </Card>
 
+      {/* OAuth Authorization Modal */}
+      {oauthAuthUrl && (
+        <Modal
+          title={<span><GoogleOutlined /> Gmail Authorization</span>}
+          open={oauthModalVisible}
+          onCancel={() => {
+            setOauthModalVisible(false);
+            setOauthAuthUrl('');
+            setOauthCode('');
+          }}
+          footer={null}
+          width={500}
+        >
+          <div style={{ textAlign: 'center' }}>
+            <GoogleOutlined style={{ fontSize: 48, color: '#4285F4', marginBottom: 16 }} />
+            <Paragraph>Sign in to Gmail to authorize Aethera CRM</Paragraph>
+
+            <div style={{ marginBottom: 16 }}>
+              <Button type="primary" href={oauthAuthUrl} target="_blank">
+                Open Gmail Authorization Page
+              </Button>
+            </div>
+
+            <Paragraph type="secondary">
+              After authorizing, paste the authorization code below:
+            </Paragraph>
+
+            <Input
+              placeholder="Enter authorization code"
+              value={oauthCode}
+              onChange={(e) => setOauthCode(e.target.value)}
+              style={{ marginBottom: 16 }}
+            />
+
+            <Button
+              type="primary"
+              disabled={!oauthCode.trim()}
+              onClick={handleExchangeToken}
+              loading={false}
+            >
+              Exchange Code for Token
+            </Button>
+          </div>
+        </Modal>
+      )}
+
       {/* Integration Status */}
       <Card title="Integration Status">
         <Space direction="vertical" style={{ width: '100%' }}>
@@ -253,6 +453,14 @@ const Settings: React.FC = () => {
             {relayForm.getFieldValue('use_relay')
               ? <Tag icon={<CheckCircleOutlined />} color="green">Enabled</Tag>
               : <Tag color="default">Disabled</Tag>
+            }
+          </div>
+          <Divider style={{ margin: '8px 0' }} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span><GoogleOutlined /> Gmail OAuth Direct</span>
+            {oauthConfig?.use_oauth && oauthConfig.client_id
+              ? <Tag icon={<CheckCircleOutlined />} color="green">Active</Tag>
+              : <Tag color="default">Not Configured</Tag>
             }
           </div>
           <Divider style={{ margin: '8px 0' }} />

@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { createEmailSchema, emailTemplateSchema, gmailRelayConfigSchema, paginationSchema } from '../utils/validation';
+import { createEmailSchema, emailTemplateSchema, gmailRelayConfigSchema, gmailOAuthConfigSchema, paginationSchema } from '../utils/validation';
 import { generateId, calculatePagination, isValidEmail } from '../utils/helpers';
 import type { AppEnv } from '../types';
 
@@ -144,6 +144,246 @@ emailsRoutes.post('/smtp/test', async (c) => {
   });
 });
 
+// ───── Gmail OAuth Configuration ─────
+
+// Get Gmail OAuth config
+emailsRoutes.get('/oauth/config', async (c) => {
+  const db = (c as any).env.DB as any;
+  let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+  const settings: any = await stmt.all();
+
+  const config: Record<string, string> = {};
+  for (const row of settings || []) {
+    const r = row as any;
+    if (r.key === 'gmail_oauth_client_secret') {
+      config.client_secret = r.value ? '••••••••' : '';
+    } else {
+      config[r.key.replace('gmail_oauth_', '')] = r.value || '';
+    }
+  }
+
+  return c.json({
+    data: {
+      client_id: config.client_id || '',
+      redirect_uri: config.redirect_uri || '',
+      from_email: config.from_email || 'info@aetherahealthcare.com',
+      from_name: config.from_name || 'Aethera Healthcare',
+      use_oauth: config.use_oauth === 'true',
+    },
+  });
+});
+
+// Save Gmail OAuth config
+emailsRoutes.put('/oauth/config', async (c) => {
+  const body = await c.req.json();
+  const validated = gmailOAuthConfigSchema.parse(body);
+
+  const pairs: Record<string, string> = {
+    gmail_oauth_client_id: validated.client_id,
+    gmail_oauth_client_secret: validated.client_secret || '',
+    gmail_oauth_redirect_uri: validated.redirect_uri || '',
+    gmail_oauth_from_email: validated.from_email || 'info@aetherahealthcare.com',
+    gmail_oauth_from_name: validated.from_name || 'Aethera Healthcare',
+    gmail_oauth_use_oauth: validated.use_oauth ? 'true' : 'false',
+  };
+
+  const db = (c as any).env.DB as any;
+  for (const [key, value] of Object.entries(pairs)) {
+    let stmt: any = db.prepare("SELECT id FROM settings WHERE key = ?");
+    stmt = stmt.bind(key);
+    const existing = await stmt.first();
+
+    if (existing) {
+      stmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
+      stmt = stmt.bind(value);
+      stmt = stmt.bind(key);
+      await stmt.run();
+    } else {
+      stmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')") as any;
+      stmt = stmt.bind(generateId());
+      stmt = stmt.bind(key);
+      stmt = stmt.bind(value);
+      await stmt.run();
+    }
+  }
+
+  return c.json({ message: 'Gmail OAuth configuration saved successfully' });
+});
+
+// Generate Gmail OAuth auth URL
+emailsRoutes.post('/oauth/auth-url', async (c) => {
+  const db = (c as any).env.DB as any;
+  let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+  const settings: any = await stmt.all();
+  const config: Record<string, string> = {};
+  for (const row of settings || []) {
+    const r = row as any;
+    config[r.key] = r.value;
+  }
+
+  const clientId = config.gmail_oauth_client_id;
+  const redirectUri = config.gmail_oauth_redirect_uri || 'urn:ietf:wg:oauth:2.0:oob';
+  const scope = 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile';
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=${encodeURIComponent(scope)}&access_type=offline&prompt=consent`;
+
+  return c.json({
+    data: { auth_url: authUrl },
+  });
+});
+
+// Exchange OAuth code for token (for manual setup - user provides code)
+emailsRoutes.post('/oauth/token', async (c) => {
+  const body = await c.req.json();
+  const { code } = body;
+
+  if (!code) {
+    throw new HTTPException(400, { message: 'Authorization code required' });
+  }
+
+  const db = (c as any).env.DB as any;
+  let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+  const settings: any = await stmt.all();
+  const config: Record<string, string> = {};
+  for (const row of settings || []) {
+    const r = row as any;
+    config[r.key] = r.value;
+  }
+
+  const clientId = config.gmail_oauth_client_id;
+  const clientSecret = config.gmail_oauth_client_secret;
+
+  if (!clientId || !clientSecret) {
+    throw new HTTPException(400, { message: 'Gmail OAuth client ID and secret required' });
+  }
+
+  const redirectUri = config.gmail_oauth_redirect_uri || 'urn:ietf:wg:oauth:2.0:oob';
+
+  try {
+    const tokenUrl = 'https://oauth2.googleapis.com/token';
+    const tokenResponse = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const err = await tokenResponse.text();
+      throw new HTTPException(400, { message: `Token exchange failed: ${err}` });
+    }
+
+    const tokenData = await tokenResponse.json();
+
+    // Store the tokens in settings
+    let storeStmt: any = db.prepare("SELECT id FROM settings WHERE key = ?");
+    for (const [key, value] of Object.entries({
+      gmail_oauth_access_token: tokenData.access_token,
+      gmail_oauth_refresh_token: tokenData.refresh_token || '',
+      gmail_oauth_token_expiry: tokenData.expires_in ? (Date.now() / 1000 + tokenData.expires_in).toString() : '',
+      gmail_oauth_use_oauth: 'true',
+    })) {
+      storeStmt = storeStmt.bind(key);
+      const existing = await storeStmt.first();
+      storeStmt = db.prepare("SELECT id FROM settings WHERE key = ?") as any;
+
+      if (existing) {
+        storeStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
+        storeStmt = storeStmt.bind(value);
+        storeStmt = storeStmt.bind(key);
+        await storeStmt.run();
+      } else {
+        storeStmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')") as any;
+        storeStmt = storeStmt.bind(generateId());
+        storeStmt = storeStmt.bind(key);
+        storeStmt = storeStmt.bind(value);
+        await storeStmt.run();
+      }
+    }
+
+    // Get user info
+    const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+    const userInfo = await userInfoResponse.json();
+
+    return c.json({
+      message: 'Gmail OAuth configured successfully',
+      data: {
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        email: userInfo.email,
+        name: userInfo.name,
+      },
+    });
+  } catch (e: any) {
+    throw new HTTPException(500, { message: `OAuth error: ${e.message}` });
+  }
+});
+
+// Refresh Gmail OAuth token
+emailsRoutes.post('/oauth/refresh', async (c) => {
+  const db = (c as any).env.DB as any;
+  let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+  const settings: any = await stmt.all();
+  const config: Record<string, string> = {};
+  for (const row of settings || []) {
+    const r = row as any;
+    config[r.key] = r.value;
+  }
+
+  const refreshToken = config.gmail_oauth_refresh_token;
+  const clientId = config.gmail_oauth_client_id;
+  const clientSecret = config.gmail_oauth_client_secret;
+
+  if (!refreshToken || !clientId || !clientSecret) {
+    throw new HTTPException(400, { message: 'Refresh token and client credentials required' });
+  }
+
+  try {
+    const tokenUrl = 'https://oauth2.googleapis.com/token';
+    const tokenResponse = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        refresh_token: refreshToken,
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: 'refresh_token',
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const err = await tokenResponse.text();
+      throw new HTTPException(400, { message: `Token refresh failed: ${err}` });
+    }
+
+    const tokenData = await tokenResponse.json();
+
+    // Update access token in settings
+    let storeStmt: any = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
+    storeStmt = storeStmt.bind(tokenData.access_token);
+    storeStmt = storeStmt.bind('gmail_oauth_access_token');
+    await storeStmt.run();
+
+    return c.json({
+      message: 'Token refreshed successfully',
+      data: { access_token: tokenData.access_token },
+    });
+  } catch (e: any) {
+    throw new HTTPException(500, { message: `Token refresh error: ${e.message}` });
+  }
+});
+
 // ───── Gmail Relay Sending Logic ─────
 
 async function sendViaGmailRelay(opts: {
@@ -180,6 +420,121 @@ async function sendViaGmailRelay(opts: {
   }
 
   return await resp.json();
+}
+
+// ───── Gmail OAuth Sending Logic ─────
+
+async function sendViaGmailOAuth(opts: {
+  accessToken: string;
+  fromEmail: string;
+  fromName: string;
+  to: string;
+  subject: string;
+  htmlBody: string;
+  textBody?: string;
+}): Promise<any> {
+  // Create MIME message
+  const boundary = 'boundary-' + Date.now();
+  const textBody = opts.textBody || opts.htmlBody.replace(/<[^>]*>/g, '');
+
+  let mimeMessage = `From: ${opts.fromName} <${opts.fromEmail}>\r\n`;
+  mimeMessage += `To: ${opts.to}\r\n`;
+  mimeMessage += `Subject: ${opts.subject}\r\n`;
+  mimeMessage += `MIME-Version: 1.0\r\n`;
+  mimeMessage += `Content-Type: multipart/alternative; boundary="${boundary}"\r\n`;
+  mimeMessage += `\r\n--${boundary}\r\n`;
+  mimeMessage += `Content-Type: text/plain; charset=UTF-8\r\n`;
+  mimeMessage += `\r\n${textBody}\r\n`;
+  mimeMessage += `\r\n--${boundary}\r\n`;
+  mimeMessage += `Content-Type: text/html; charset=UTF-8\r\n`;
+  mimeMessage += `\r\n${opts.htmlBody}\r\n`;
+  mimeMessage += `\r\n--${boundary}--\r\n`;
+
+  const encodedMessage = btoa(mimeMessage).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  const resp = await fetch('https://www.googleapis.com/upload/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${opts.accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw: encodedMessage }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Gmail API error (${resp.status}): ${err}`);
+  }
+
+  return await resp.json();
+}
+
+// ───── Helper function to get OAuth tokens ─────
+
+async function getGmailOAuthTokens(db: any) {
+  let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+  const settings: any = await stmt.all();
+  const config: Record<string, string> = {};
+  for (const row of settings || []) {
+    const r = row as any;
+    config[r.key] = r.value;
+  }
+
+  const accessToken = config.gmail_oauth_access_token;
+  const refreshToken = config.gmail_oauth_refresh_token;
+  const clientId = config.gmail_oauth_client_id;
+  const clientSecret = config.gmail_oauth_client_secret;
+
+  if (!accessToken) {
+    return null;
+  }
+
+  // Check if token is expired
+  const tokenExpiry = parseInt(config.gmail_oauth_token_expiry || '0');
+  const now = Date.now() / 1000;
+  const isExpired = tokenExpiry && now > tokenExpiry;
+
+  if (isExpired && refreshToken && clientId && clientSecret) {
+    // Refresh the token
+    try {
+      const tokenUrl = 'https://oauth2.googleapis.com/token';
+      const tokenResponse = await fetch(tokenUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          refresh_token: refreshToken,
+          client_id: clientId,
+          client_secret: clientSecret,
+          grant_type: 'refresh_token',
+        }),
+      });
+
+      if (tokenResponse.ok) {
+        const tokenData = await tokenResponse.json();
+        // Update access token in settings
+        let updateStmt: any = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
+        updateStmt = updateStmt.bind(tokenData.access_token);
+        updateStmt = updateStmt.bind('gmail_oauth_access_token');
+        await updateStmt.run();
+
+        // Update expiry
+        if (tokenData.expires_in) {
+          let expiryStmt: any = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
+          expiryStmt = expiryStmt.bind((now + tokenData.expires_in).toString());
+          expiryStmt = expiryStmt.bind('gmail_oauth_token_expiry');
+          await expiryStmt.run();
+        }
+
+        return tokenData.access_token;
+      }
+    } catch (e) {
+      console.error('Token refresh failed:', e.message);
+    }
+  }
+
+  return accessToken;
 }
 
 // ───── List emails ─────
@@ -406,6 +761,46 @@ emailsRoutes.post('/send', async (c) => {
         sendError = null;
       } catch (e: any) {
         console.error('Gmail relay failed:', e.message);
+        sendError = e.message;
+        status = 'pending';
+      }
+    }
+  }
+
+  // Try Gmail OAuth if configured
+  if (sentVia === 'db') {
+    stmt = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+    const oauthSettings: any = await stmt.all();
+    const oauthCfg: Record<string, string> = {};
+    for (const row of oauthSettings || []) {
+      const r = row as any;
+      oauthCfg[r.key] = r.value;
+    }
+
+    const useOauth = oauthCfg.gmail_oauth_use_oauth === 'true';
+    const fromEmail = oauthCfg.gmail_oauth_from_email || 'info@aetherahealthcare.com';
+    const fromName = oauthCfg.gmail_oauth_from_name || 'Aethera Healthcare';
+
+    if (useOauth && oauthCfg.gmail_oauth_access_token) {
+      try {
+        const accessToken = await getGmailOAuthTokens(db);
+        if (accessToken) {
+          const result = await sendViaGmailOAuth({
+            accessToken,
+            fromEmail,
+            fromName,
+            to: validated.to,
+            subject: validated.subject || '',
+            htmlBody: validated.body,
+            textBody: validated.body.replace(/<[^>]*>/g, ''),
+          });
+          messageId = result.id || result.threadId || `oauth-${emailId.slice(0, 8)}`;
+          sentVia = 'gmail-oauth';
+          status = 'sent';
+          sendError = null;
+        }
+      } catch (e: any) {
+        console.error('Gmail OAuth failed:', e.message);
         sendError = e.message;
         status = 'pending';
       }
