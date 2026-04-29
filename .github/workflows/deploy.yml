@@ -18,15 +18,24 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Configure Wrangler with API Token
+        run: |
+          mkdir -p .wrangler
+          cat > .wrangler/config.json << EOF
+          {
+            "account_id": "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
+            "api_token": "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+            "default_name": "aethera-crm-api"
+          }
+          EOF
+        working-directory: cloudflare/workers
+
       - name: Install dependencies
         run: cd cloudflare/workers && npm ci
 
       - name: Deploy to Cloudflare Workers
         run: npm run deploy
         working-directory: cloudflare/workers
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   deploy-frontend:
     runs-on: ubuntu-latest
@@ -39,12 +48,21 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Configure Wrangler with API Token
+        run: |
+          mkdir -p .wrangler
+          cat > .wrangler/config.json << EOF
+          {
+            "account_id": "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}",
+            "api_token": "${{ secrets.CLOUDFLARE_API_TOKEN }}",
+            "default_name": "aethera-crm"
+          }
+          EOF
+        working-directory: cloudflare/pages
+
       - name: Install dependencies
         run: cd cloudflare/pages && npm ci
 
       - name: Build and Deploy to Cloudflare Pages
         run: npm run publish
         working-directory: cloudflare/pages
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
