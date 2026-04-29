@@ -43,7 +43,10 @@ jobs:
       - name: Install dependencies
         run: cd cloudflare/pages && npm ci
 
-      - name: Build and Deploy to Cloudflare Pages
+      - name: Build
+        run: cd cloudflare/pages && npm run build
+
+      - name: Deploy to Cloudflare Pages
         run: npx wrangler pages deploy dist --project-name aethera-crm
         working-directory: cloudflare/pages
         env:
