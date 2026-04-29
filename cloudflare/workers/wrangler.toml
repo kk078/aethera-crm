@@ -1,0 +1,59 @@
+name = "aethera-crm-api"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Account Configuration
+account_id = "2c268625d9e6e4c084ff296fcdf5f3bd"
+
+# Workers Configuration
+workers_dev = true
+# route = { pattern = "api.aetherahealthcare.com/*", zone_name = "aetherahealthcare.com" }
+
+# D1 Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "aethera-crm-db"
+database_id = "2695343a-69be-4f82-a0a6-f95250d6da23"
+
+# R2 Bucket Binding (commented out - not yet created)
+# [[r2_buckets]]
+# binding = "STORAGE"
+# bucket_name = "aethera-crm-storage"
+
+# AI Gateway Binding (commented out - configure in dashboard)
+# [ai]
+# binding = "AI"
+# gateway_id = "aethera-gateway"
+
+# Queue Bindings (commented out - use local queues for now)
+# [[queues.producers]]
+# queue = "aethera-email-sync"
+# binding = "QUEUE_EMAIL_SYNC"
+
+# Send Email Binding - enables email sending via Cloudflare
+[[send_email]]
+name = "EMAIL"
+
+# Environment Variables
+[vars]
+ENVIRONMENT = "production"
+JWT_SECRET = "aethera_healthcare_jwt_secret_2026_secure_random_string_change_in_production"
+JWT_EXPIRY_HOURS = "24"
+ADMIN_USERNAME = "aethera"
+FRONTEND_URL = "https://aethera-crm.aetherahealthcare.workers.dev"
+API_RATE_LIMIT_REQUESTS = "1000"
+API_RATE_LIMIT_WINDOW_MS = "3600000"
+
+# Development Configuration
+[dev]
+port = 8787
+local_protocol = "http"
+
+# Cron Triggers (Scheduled Tasks) - Disabled for deployment
+# [[triggers.crons]]
+# crons = ["0 2 * * *"]  # Daily backup at 2 AM EST
+
+# Build Configuration (disabled for development)
+# [build]
+# command = "npm run build"

@@ -1,0 +1,11 @@
+# Aethera-CRM Pages Configuration
+name = "aethera-crm"
+pages_build_output_dir = "dist"
+
+# Production Environment
+[env.production]
+vars = { ENVIRONMENT = "production", API_URL = "https://aethera-crm-api.aetherahealthcare.workers.dev" }
+
+# Preview Environment (replaces development)
+[env.preview]
+vars = { ENVIRONMENT = "preview", API_URL = "https://aethera-crm-api.aetherahealthcare.workers.dev" }

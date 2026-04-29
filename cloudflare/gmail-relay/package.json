@@ -1,0 +1,16 @@
+{
+  "name": "aethera-gmail-relay",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy --minify",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "hono": "^4.12.15"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

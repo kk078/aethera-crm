@@ -1,0 +1,12 @@
+name = "aethera-gmail-relay"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+account_id = "2c268625d9e6e4c084ff296fcdf5f3bd"
+workers_dev = true
+
+[vars]
+GMAIL_USER_EMAIL = "info@aetherahealthcare.com"
+
+[[send_email]]
+name = "EMAIL"
