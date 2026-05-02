@@ -23,8 +23,11 @@ jobs:
       - name: Install dependencies
         run: cd cloudflare/workers && npm install
 
+      - name: Install wrangler
+        run: npm install -g wrangler
+
       - name: Deploy to Cloudflare Workers
-        run: npx wrangler deploy --env production
+        run: wrangler deploy --env production
         working-directory: cloudflare/workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -44,11 +47,14 @@ jobs:
       - name: Install dependencies
         run: cd cloudflare/pages && npm install
 
+      - name: Install wrangler
+        run: npm install -g wrangler
+
       - name: Build
         run: cd cloudflare/pages && npm run build
 
       - name: Deploy to Cloudflare Pages
-        run: npx wrangler pages deploy dist --project-name aethera-crm
+        run: wrangler pages deploy dist --project-name aethera-crm
         working-directory: cloudflare/pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
