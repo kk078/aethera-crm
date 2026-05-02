@@ -28,10 +28,13 @@ jobs:
 
       - name: Deploy to Cloudflare Workers
         run: |
-          export CLOUDFLARE_API_TOKEN="${{ secrets.CF_API_TOKEN }}"
-          export CLOUDFLARE_ACCOUNT_ID="${{ secrets.CF_ACCOUNT_ID }}"
-          wrangler deploy --env production --account-id "${{ secrets.CF_ACCOUNT_ID }}"
+          echo "API Token: $CLOUDFLARE_API_TOKEN"
+          echo "Account ID: $CLOUDFLARE_ACCOUNT_ID"
+          wrangler deploy --env production --account-id "$CLOUDFLARE_ACCOUNT_ID" -y
         working-directory: cloudflare/workers
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
 
   deploy-frontend:
     runs-on: ubuntu-latest
@@ -55,7 +58,10 @@ jobs:
 
       - name: Deploy to Cloudflare Pages
         run: |
-          export CLOUDFLARE_API_TOKEN="${{ secrets.CF_API_TOKEN }}"
-          export CLOUDFLARE_ACCOUNT_ID="${{ secrets.CF_ACCOUNT_ID }}"
-          wrangler pages deploy dist --project-name aethera-crm --account-id "${{ secrets.CF_ACCOUNT_ID }}"
+          echo "API Token: $CLOUDFLARE_API_TOKEN"
+          echo "Account ID: $CLOUDFLARE_ACCOUNT_ID"
+          wrangler pages deploy dist --project-name aethera-crm --account-id "$CLOUDFLARE_ACCOUNT_ID"
         working-directory: cloudflare/pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
