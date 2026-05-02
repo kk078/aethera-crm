@@ -23,7 +23,7 @@ jobs:
         run: cd cloudflare/workers && npm ci
 
       - name: Deploy to Cloudflare Workers
-        run: npx wrangler deploy
+        run: npx wrangler deploy --env production
         working-directory: cloudflare/workers
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -41,7 +41,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: cd cloudflare/pages && npm install
+        run: cd cloudflare/pages && npm ci
 
       - name: Build
         run: cd cloudflare/pages && npm run build
