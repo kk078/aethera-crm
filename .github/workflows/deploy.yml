@@ -6,6 +6,7 @@ on:
     paths:
       - 'cloudflare/workers/**'
       - 'cloudflare/pages/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
