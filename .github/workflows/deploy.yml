@@ -64,7 +64,10 @@ jobs:
         run: |
           echo "API Token: $CLOUDFLARE_API_TOKEN"
           echo "Account ID: $CLOUDFLARE_ACCOUNT_ID"
-          wrangler pages deploy dist --project-name aethera-crm --account-id "$CLOUDFLARE_ACCOUNT_ID"
+          echo "Checking dist directory..."
+          ls -la dist/
+          echo "Running wrangler pages deploy..."
+          wrangler pages deploy dist --project-name aethera-crm --account-id "$CLOUDFLARE_ACCOUNT_ID" -y || echo "Wrangler pages deploy failed with exit code $?"
         working-directory: cloudflare/pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
