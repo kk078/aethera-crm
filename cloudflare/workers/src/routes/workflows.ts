@@ -8,53 +8,61 @@ export const workflowsRoutes = new Hono<AppEnv>();
 
 // List workflows
 workflowsRoutes.get('/', async (c) => {
-  const user = c.get('user');
-  const query = c.req.query();
+  try {
+    const user = c.get('user');
+    const queryParam = c.req.query();
 
-  const pagination = paginationSchema.parse({
-    page: parseInt(query.page || '1'),
-    per_page: parseInt(query.per_page || '20'),
-    sort: query.sort || 'created_at',
-    order: query.order || 'desc',
-  });
+    const pagination = paginationSchema.parse({
+      page: parseInt(queryParam.page || '1'),
+      per_page: parseInt(queryParam.per_page || '20'),
+      sort: queryParam.sort || 'created_at',
+      order: queryParam.order || 'desc',
+    });
 
-  let whereClause = 'WHERE 1=1';
-  const bindings: any[] = [];
+    let whereClause = '';
+    const bindings: any[] = [];
 
-  if (user?.role !== 'admin') {
-    whereClause += ' AND owner_id = ?';
-    bindings.push(user?.id);
+    if (user?.role !== 'admin') {
+      whereClause = ' WHERE owner_id = ?';
+      bindings.push(user.id);
+    }
+
+    const db = (c as any).env.DB as any;
+
+    // Get count
+    const countBindings = [...bindings];
+    const countResult = await db.prepare(`SELECT COUNT(*) as total FROM workflows ${whereClause}`).bind(...countBindings).first();
+    const total = countResult?.total || 0;
+
+    const offset = (pagination.page - 1) * pagination.per_page;
+
+    const sortCol = pagination.sort || 'created_at';
+    const sortOrder = pagination.order || 'desc';
+    const queryBindings = [...bindings, pagination.per_page, offset];
+    let sqlQuery = `SELECT * FROM workflows ${whereClause} ORDER BY ${sortCol} ${sortOrder}`;
+    const result: any = await db.prepare(`${sqlQuery} LIMIT ? OFFSET ?`).bind(...queryBindings).all();
+    const results = result.results || [];
+
+    const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
+
+    return c.json({
+      data: results,
+      pagination: {
+        page: paginationInfo.page,
+        per_page: paginationInfo.perPage,
+        total: paginationInfo.total,
+        total_pages: paginationInfo.totalPages,
+        has_more: paginationInfo.hasMore,
+      },
+    });
+  } catch (error: any) {
+    console.error('[WORKFLOWS] Error in GET /workflows:', error.message || error);
+    return c.json({
+      data: [],
+      error: error.message || 'Failed to fetch workflows',
+      status: 'error',
+    }, 200);
   }
-
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT COUNT(*) as total FROM workflows ${whereClause}`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const countResult = await stmt.first();
-  const total = countResult?.total || 0;
-
-  const offset = (pagination.page - 1) * pagination.per_page;
-  stmt = db.prepare(`SELECT * FROM workflows ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`) as any;
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  stmt = stmt.bind(pagination.per_page);
-  stmt = stmt.bind(offset);
-  const results: any = await stmt.all();
-
-  const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
-
-  return c.json({
-    data: results || [],
-    pagination: {
-      page: paginationInfo.page,
-      per_page: paginationInfo.perPage,
-      total: paginationInfo.total,
-      total_pages: paginationInfo.totalPages,
-      has_more: paginationInfo.hasMore,
-    },
-  });
 });
 
 // Get single workflow

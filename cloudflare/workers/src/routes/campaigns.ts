@@ -7,50 +7,58 @@ import type { AppEnv } from '../types';
 export const campaignsRoutes = new Hono<AppEnv>();
 
 campaignsRoutes.get('/', async (c) => {
-  const user = c.get('user');
-  const query = c.req.query();
-  const pagination = paginationSchema.parse({
-    page: parseInt(query.page || '1'),
-    per_page: parseInt(query.per_page || '20'),
-    sort: query.sort || 'created_at',
-    order: query.order || 'desc',
-    status: query.status,
-  });
-  let whereClause = 'WHERE 1=1';
-  const bindings: any[] = [];
-  if (user?.role !== 'admin') {
-    whereClause += ' AND owner_id = ?';
-    bindings.push(user?.id);
+  try {
+    const user = c.get('user');
+    const queryParam = c.req.query();
+    const pagination = paginationSchema.parse({
+      page: parseInt(queryParam.page || '1'),
+      per_page: parseInt(queryParam.per_page || '20'),
+      sort: queryParam.sort || 'created_at',
+      order: queryParam.order || 'desc',
+      status: queryParam.status,
+    });
+    let whereClause = '';
+    const bindings: any[] = [];
+    if (user?.role !== 'admin') {
+      whereClause = ' WHERE owner_id = ?';
+      bindings.push(user.id);
+    }
+    if (pagination.status) {
+      whereClause += (whereClause ? ' AND ' : ' WHERE ') + ' status = ?';
+      bindings.push(pagination.status);
+    }
+    const db = (c as any).env.DB as any;
+
+    // Get count
+    const countBindings = [...bindings];
+    const countResult = await db.prepare(`SELECT COUNT(*) as total FROM campaigns ${whereClause}`).bind(...countBindings).first();
+    const offset = (pagination.page - 1) * pagination.per_page;
+
+    const sortCol = pagination.sort || 'created_at';
+    const sortOrder = pagination.order || 'desc';
+    const queryBindings = [...bindings, pagination.per_page, offset];
+    let sqlQuery = `SELECT * FROM campaigns ${whereClause} ORDER BY ${sortCol} ${sortOrder}`;
+    const result: any = await db.prepare(`${sqlQuery} LIMIT ? OFFSET ?`).bind(...queryBindings).all();
+    const results = result.results || [];
+    const paginationInfo = calculatePagination(pagination.page, pagination.per_page, countResult?.total || 0);
+    return c.json({
+      data: results,
+      pagination: {
+        page: paginationInfo.page,
+        per_page: paginationInfo.perPage,
+        total: paginationInfo.total,
+        total_pages: paginationInfo.totalPages,
+        has_more: paginationInfo.hasMore,
+      },
+    });
+  } catch (error: any) {
+    console.error('[CAMPAIGNS] Error in GET /campaigns:', error.message || error);
+    return c.json({
+      data: [],
+      error: error.message || 'Failed to fetch campaigns',
+      status: 'error',
+    }, 200);
   }
-  if (pagination.status) {
-    whereClause += ' AND status = ?';
-    bindings.push(pagination.status);
-  }
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT COUNT(*) as total FROM campaigns ${whereClause}`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const countResult = await stmt.first();
-  const offset = (pagination.page - 1) * pagination.per_page;
-  stmt = db.prepare(`SELECT * FROM campaigns ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`) as any;
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  stmt = stmt.bind(pagination.per_page);
-  stmt = stmt.bind(offset);
-  const results: any = await stmt.all();
-  const paginationInfo = calculatePagination(pagination.page, pagination.per_page, countResult?.total || 0);
-  return c.json({
-    data: results || [],
-    pagination: {
-      page: paginationInfo.page,
-      per_page: paginationInfo.perPage,
-      total: paginationInfo.total,
-      total_pages: paginationInfo.totalPages,
-      has_more: paginationInfo.hasMore,
-    },
-  });
 });
 
 campaignsRoutes.get('/:id', async (c) => {

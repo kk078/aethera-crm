@@ -18,16 +18,34 @@ import { twilioRoutes } from './routes/twilio';
 import { workflowsRoutes } from './routes/workflows';
 import { settingsRoutes } from './routes/settings';
 import { backupRoutes } from './routes/backup';
+import { onboardingRoutes } from './routes/onboarding';
+import { debugRoutes } from './routes/debug';
 import { providerLeadRoutes } from './routes/provider-leads';
 import { seedRoutes } from './routes/seed';
+import { callQueueRoutes } from './routes/call-queue';
+import { callAnalyticsRoutes } from './routes/call-analytics';
+import { calendarIntegrationRoutes } from './routes/calendar-integration';
 // Import middleware
 import { authMiddleware, optionalAuthMiddleware } from './middleware/auth';
 import { rateLimitMiddleware } from './middleware/rateLimit';
 import { errorHandler } from './middleware/errorHandler';
+import { schemaSentinelMiddleware } from './middleware/schemaSentinel';
 // Import database initialization
 import { initializeDatabase } from './db/init';
 // Create Hono app
 const app = new Hono();
+// Environment logging - prints all available bindings
+app.use('*', async (c, next) => {
+    const env = c.env;
+    console.log('[ENV] Available bindings:', Object.keys(env));
+    if (env.DB) {
+        console.log('[ENV] DB binding available');
+    }
+    else {
+        console.warn('[ENV] WARNING: DB binding not found!');
+    }
+    await next();
+});
 // Global middleware
 app.use('*', logger());
 app.use('*', prettyJSON());
@@ -44,6 +62,8 @@ app.use('*', cors({
 }));
 // Rate limiting
 app.use('*', rateLimitMiddleware);
+// Schema Sentinel - checks table existence before route execution
+app.use('/api/v1/*', schemaSentinelMiddleware);
 // Error handling
 app.use('*', errorHandler);
 // Health check endpoint
@@ -76,6 +96,7 @@ apiRoutes.use('/settings/*', authMiddleware);
 apiRoutes.use('/backup/*', authMiddleware);
 apiRoutes.use('/provider-leads/*', authMiddleware);
 apiRoutes.use('/providers/import', authMiddleware);
+apiRoutes.use('/onboarding/*', authMiddleware);
 // Twilio routes (optional auth - webhooks are public, protected routes check inside)
 apiRoutes.use('/twilio/*', optionalAuthMiddleware);
 apiRoutes.route('/twilio', twilioRoutes);
@@ -94,6 +115,11 @@ apiRoutes.route('/settings', settingsRoutes);
 apiRoutes.route('/backup', backupRoutes);
 apiRoutes.route('/provider-leads', providerLeadRoutes);
 apiRoutes.route('/seed', seedRoutes);
+apiRoutes.route('/onboarding', onboardingRoutes);
+apiRoutes.route('/debug', debugRoutes);
+apiRoutes.route('/call-queue', callQueueRoutes);
+apiRoutes.route('/call-analytics', callAnalyticsRoutes);
+apiRoutes.route('/calendar-integration', calendarIntegrationRoutes);
 // 404 handler
 app.notFound((c) => {
     return c.json({

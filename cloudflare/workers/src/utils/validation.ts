@@ -76,8 +76,11 @@ export const updateLeadSchema = createLeadSchema.partial();
 export const createDealSchema = z.object({
   contact_id: z.string().uuid().optional(),
   organization_id: z.string().uuid().optional(),
+  provider_id: z.string().uuid().optional(),
   name: z.string().min(1).max(255),
-  stage: z.string(),
+  stage: z.string().optional(),
+  pipeline_stage: z.string().optional(),
+  onboarding_stage: z.string().optional(),
   amount: z.number().optional(),
   probability: z.number().min(0).max(100).optional(),
   expected_close_date: z.string().optional(),
@@ -142,6 +145,22 @@ export const createProviderSchema = z.object({
 });
 
 export const updateProviderSchema = createProviderSchema.partial();
+
+// Payer Enrollment Schemas
+export const createPayerEnrollmentSchema = z.object({
+  npi_provider_id: z.string().uuid(),
+  payer_name: z.string().min(1),
+  payer_id: z.string().optional(),
+  enrollment_status: z.string().optional(),
+  application_date: z.string().optional(),
+  approval_date: z.string().optional(),
+  effective_date: z.string().optional(),
+  contract_signed: z.number().optional(),
+  test_transactions_status: z.string().optional(),
+  production_status: z.string().optional(),
+});
+
+export const updatePayerEnrollmentSchema = createPayerEnrollmentSchema.partial();
 
 // Task Schemas
 export const createTaskSchema = z.object({
@@ -245,6 +264,8 @@ export const paginationSchema = z.object({
   status: z.string().optional(),
   priority: z.string().optional(),
   stage: z.string().optional(),
+  pipeline_stage: z.string().optional(),
+  onboarding_stage: z.string().optional(),
 });
 
 // Type exports

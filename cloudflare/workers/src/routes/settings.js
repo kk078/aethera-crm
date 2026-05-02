@@ -4,11 +4,12 @@ import { generateId } from '../utils/helpers';
 export const settingsRoutes = new Hono();
 // List all settings
 settingsRoutes.get('/', async (c) => {
-    const settings = await c.env.DB.prepare('SELECT * FROM settings ORDER BY category, key')
+    const result = await c.env.DB.prepare('SELECT * FROM settings ORDER BY category, key')
         .all();
+    const settings = result.results || [];
     // Group settings by category
     const grouped = {};
-    for (const setting of settings.results || []) {
+    for (const setting of settings || []) {
         const category = setting.category || 'general';
         if (!grouped[category]) {
             grouped[category] = {};
@@ -22,11 +23,12 @@ settingsRoutes.get('/', async (c) => {
 // Get settings by category
 settingsRoutes.get('/:category', async (c) => {
     const { category } = c.req.param();
-    const settings = await c.env.DB.prepare('SELECT * FROM settings WHERE category = ? ORDER BY key')
+    const result = await c.env.DB.prepare('SELECT * FROM settings WHERE category = ? ORDER BY key')
         .bind(category)
         .all();
+    const settings = result.results || [];
     const grouped = {};
-    for (const setting of settings.results || []) {
+    for (const setting of settings || []) {
         grouped[setting.key] = setting.value;
     }
     return c.json({
@@ -116,8 +118,9 @@ settingsRoutes.put('/integrations/:name', async (c) => {
 });
 // List all integrations
 settingsRoutes.get('/integrations/list', async (c) => {
-    const integrations = await c.env.DB.prepare('SELECT id, name, type, is_active, last_sync, created_at, updated_at FROM integrations ORDER BY name').all();
+    const result = await c.env.DB.prepare('SELECT id, name, type, is_active, last_sync, created_at, updated_at FROM integrations ORDER BY name').all();
+    const integrations = result.results || [];
     return c.json({
-        data: integrations.results || [],
+        data: integrations || [],
     });
 });

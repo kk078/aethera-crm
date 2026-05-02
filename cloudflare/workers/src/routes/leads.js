@@ -52,19 +52,12 @@ leadsRoutes.get('/', async (c) => {
         bindings.push('%' + pagination.search + '%', '%' + pagination.search + '%', '%' + pagination.search + '%', '%' + pagination.search + '%');
     }
     const db = c.env.DB;
-    let stmt = db.prepare(`SELECT COUNT(*) as total FROM leads ${whereClause}`);
-    for (const b of bindings) {
-        stmt = stmt.bind(b);
-    }
-    const countResult = await stmt.first();
+    const countBindings = [...bindings];
+    const countResult = await db.prepare(`SELECT COUNT(*) as total FROM leads ${whereClause}`).bind(...countBindings).first();
     const offset = (pagination.page - 1) * pagination.per_page;
-    stmt = db.prepare(`SELECT * FROM leads ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`);
-    for (const b of bindings) {
-        stmt = stmt.bind(b);
-    }
-    stmt = stmt.bind(pagination.per_page);
-    stmt = stmt.bind(offset);
-    const results = await stmt.all();
+    const queryBindings = [...bindings, pagination.per_page, offset];
+    const result = await db.prepare(`SELECT * FROM leads ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`).bind(...queryBindings).all();
+    const results = result.results || [];
     const paginationInfo = calculatePagination(pagination.page, pagination.per_page, countResult?.total || 0);
     return c.json({
         data: results || [],
@@ -80,9 +73,7 @@ leadsRoutes.get('/', async (c) => {
 leadsRoutes.get('/:id', async (c) => {
     const { id } = c.req.param();
     const db = c.env.DB;
-    let stmt = db.prepare('SELECT * FROM leads WHERE id = ?');
-    stmt = stmt.bind(id);
-    const lead = await stmt.first();
+    const lead = await db.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
     if (!lead) {
         throw new HTTPException(404, { message: 'Lead not found' });
     }
@@ -94,38 +85,13 @@ leadsRoutes.post('/', async (c) => {
     const validated = createLeadSchema.parse(body);
     const id = generateId();
     const db = c.env.DB;
-    let stmt = db.prepare(`INSERT INTO leads (id, source, status, first_name, last_name, company, email, phone, address, specialty, npi, taxonomy, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-    stmt = stmt.bind(id);
-    stmt = stmt.bind(validated.source || 'manual');
-    stmt = stmt.bind(validated.status || 'new');
-    stmt = stmt.bind(validated.first_name || null);
-    stmt = stmt.bind(validated.last_name || null);
-    stmt = stmt.bind(validated.company || null);
-    stmt = stmt.bind(validated.email || null);
-    stmt = stmt.bind(validated.phone || null);
-    stmt = stmt.bind(validated.address || null);
-    stmt = stmt.bind(validated.specialty || null);
-    stmt = stmt.bind(validated.npi || null);
-    stmt = stmt.bind(validated.taxonomy || null);
-    stmt = stmt.bind(user?.id);
-    await stmt.run();
+    await db.prepare(`INSERT INTO leads (id, source, status, first_name, last_name, company, email, phone, address, specialty, npi, taxonomy, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, validated.source || 'manual', validated.status || 'new', validated.first_name || null, validated.last_name || null, validated.company || null, validated.email || null, validated.phone || null, validated.address || null, validated.specialty || null, validated.npi || null, validated.taxonomy || null, user?.id).run();
     if (validated.npi) {
         const scoreResult = await calculateLeadScore(c, validated);
-        stmt = db.prepare('UPDATE leads SET lead_score = ?, score_factors = ? WHERE id = ?');
-        stmt = stmt.bind(scoreResult.score);
-        stmt = stmt.bind(JSON.stringify(scoreResult.factors));
-        stmt = stmt.bind(id);
-        await stmt.run();
+        await db.prepare('UPDATE leads SET lead_score = ?, score_factors = ? WHERE id = ?').bind(scoreResult.score, JSON.stringify(scoreResult.factors), id).run();
     }
-    stmt = db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)');
-    stmt = stmt.bind(user?.id);
-    stmt = stmt.bind('create');
-    stmt = stmt.bind('leads');
-    stmt = stmt.bind(id);
-    await stmt.run();
-    stmt = db.prepare('SELECT * FROM leads WHERE id = ?');
-    stmt = stmt.bind(id);
-    const lead = await stmt.first();
+    await db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)').bind(user?.id, 'create', 'leads', id).run();
+    const lead = await db.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
     return c.json({ message: 'Lead created successfully', data: lead }, 201);
 });
 leadsRoutes.put('/:id', async (c) => {
@@ -134,9 +100,7 @@ leadsRoutes.put('/:id', async (c) => {
     const body = await c.req.json();
     const validated = updateLeadSchema.parse(body);
     const db = c.env.DB;
-    let existingStmt = db.prepare('SELECT * FROM leads WHERE id = ?');
-    existingStmt = existingStmt.bind(id);
-    const existing = await existingStmt.first();
+    const existing = await db.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
     if (!existing) {
         throw new HTTPException(404, { message: 'Lead not found' });
     }
@@ -153,60 +117,32 @@ leadsRoutes.put('/:id', async (c) => {
     }
     updates.push('updated_at = CURRENT_TIMESTAMP');
     bindings.push(id);
-    let stmt = db.prepare(`UPDATE leads SET ${updates.join(', ')} WHERE id = ?`);
-    for (const b of bindings) {
-        stmt = stmt.bind(b);
-    }
-    await stmt.run();
+    await db.prepare(`UPDATE leads SET ${updates.join(', ')} WHERE id = ?`).bind(...bindings).run();
     if (validated.npi && validated.npi !== existing.npi) {
         const scoreResult = await calculateLeadScore(c, { ...existing, ...validated });
-        stmt = db.prepare('UPDATE leads SET lead_score = ?, score_factors = ? WHERE id = ?');
-        stmt = stmt.bind(scoreResult.score);
-        stmt = stmt.bind(JSON.stringify(scoreResult.factors));
-        stmt = stmt.bind(id);
-        await stmt.run();
+        await db.prepare('UPDATE leads SET lead_score = ?, score_factors = ? WHERE id = ?').bind(scoreResult.score, JSON.stringify(scoreResult.factors), id).run();
     }
-    stmt = db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id, old_values, new_values) VALUES (?, ?, ?, ?, ?, ?)');
-    stmt = stmt.bind(user?.id);
-    stmt = stmt.bind('update');
-    stmt = stmt.bind('leads');
-    stmt = stmt.bind(id);
-    stmt = stmt.bind(JSON.stringify(existing));
-    stmt = stmt.bind(JSON.stringify(validated));
-    await stmt.run();
-    stmt = db.prepare('SELECT * FROM leads WHERE id = ?');
-    stmt = stmt.bind(id);
-    const lead = await stmt.first();
+    await db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id, old_values, new_values) VALUES (?, ?, ?, ?, ?, ?)').bind(user?.id, 'update', 'leads', id, JSON.stringify(existing), JSON.stringify(validated)).run();
+    const lead = await db.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
     return c.json({ message: 'Lead updated successfully', data: lead });
 });
 leadsRoutes.delete('/:id', async (c) => {
     const user = c.get('user');
     const { id } = c.req.param();
     const db = c.env.DB;
-    let existingStmt = db.prepare('SELECT * FROM leads WHERE id = ?');
-    existingStmt = existingStmt.bind(id);
-    const existing = await existingStmt.first();
+    const existing = await db.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
     if (!existing) {
         throw new HTTPException(404, { message: 'Lead not found' });
     }
-    let deleteStmt = db.prepare('DELETE FROM leads WHERE id = ?');
-    deleteStmt = deleteStmt.bind(id);
-    await deleteStmt.run();
-    let auditStmt = db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)');
-    auditStmt = auditStmt.bind(user?.id);
-    auditStmt = auditStmt.bind('delete');
-    auditStmt = auditStmt.bind('leads');
-    auditStmt = auditStmt.bind(id);
-    await auditStmt.run();
+    await db.prepare('DELETE FROM leads WHERE id = ?').bind(id).run();
+    await db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)').bind(user?.id, 'delete', 'leads', id).run();
     return c.json({ message: 'Lead deleted successfully' });
 });
 leadsRoutes.post('/:id/convert', async (c) => {
     const user = c.get('user');
     const { id } = c.req.param();
     const db = c.env.DB;
-    let stmt = db.prepare('SELECT * FROM leads WHERE id = ?');
-    stmt = stmt.bind(id);
-    const lead = await stmt.first();
+    const lead = await db.prepare('SELECT * FROM leads WHERE id = ?').bind(id).first();
     if (!lead) {
         throw new HTTPException(404, { message: 'Lead not found' });
     }
@@ -214,29 +150,9 @@ leadsRoutes.post('/:id/convert', async (c) => {
         throw new HTTPException(400, { message: 'Lead already converted' });
     }
     const contactId = generateId();
-    stmt = db.prepare('INSERT INTO contacts (id, first_name, last_name, email, phone, address, company, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-    stmt = stmt.bind(contactId);
-    stmt = stmt.bind(lead.first_name);
-    stmt = stmt.bind(lead.last_name);
-    stmt = stmt.bind(lead.email);
-    stmt = stmt.bind(lead.phone);
-    stmt = stmt.bind(lead.address);
-    stmt = stmt.bind(lead.company);
-    stmt = stmt.bind(user?.id);
-    await stmt.run();
-    stmt = db.prepare('UPDATE leads SET status = ?, converted_to_contact_id = ? WHERE id = ?');
-    stmt = stmt.bind('converted');
-    stmt = stmt.bind(contactId);
-    stmt = stmt.bind(id);
-    await stmt.run();
-    stmt = db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)');
-    stmt = stmt.bind(user?.id);
-    stmt = stmt.bind('convert');
-    stmt = stmt.bind('leads');
-    stmt = stmt.bind(id);
-    await stmt.run();
-    stmt = db.prepare('SELECT * FROM contacts WHERE id = ?');
-    stmt = stmt.bind(contactId);
-    const contact = await stmt.first();
+    await db.prepare('INSERT INTO contacts (id, first_name, last_name, email, phone, address, company, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(contactId, lead.first_name, lead.last_name, lead.email, lead.phone, lead.address, lead.company, user?.id).run();
+    await db.prepare('UPDATE leads SET status = ?, converted_to_contact_id = ? WHERE id = ?').bind('converted', contactId, id).run();
+    await db.prepare('INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)').bind(user?.id, 'convert', 'leads', id).run();
+    const contact = await db.prepare('SELECT * FROM contacts WHERE id = ?').bind(contactId).first();
     return c.json({ message: 'Lead converted successfully', data: { lead: { ...lead, status: 'converted' }, contact } });
 });

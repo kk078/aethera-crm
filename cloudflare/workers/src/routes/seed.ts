@@ -502,3 +502,49 @@ seedRoutes.post('/florida-providers', async (c) => {
     },
   }, 201);
 });
+
+// Create technical tasks for first 5 providers
+seedRoutes.post('/create-technical-tasks', async (c) => {
+  const db = (c as any).env.DB as any;
+  const user = c.get('user');
+
+  // Get first 5 providers
+  let stmt: any = db.prepare(`SELECT id, npi, organization_name, first_name, last_name FROM npi_providers ORDER BY created_at LIMIT 5`);
+  const result: any = await stmt.all();
+  const providers = result.results || [];
+
+  const technicalTasks = [
+    { title: 'Verify CAQH Profile', description: 'Confirm provider CAQH profile is complete and up to date', priority: 'high' },
+    { title: 'Submit EDI to Availity', description: 'Submit EDI enrollment forms to Availity for claims processing', priority: 'high' },
+    { title: 'Test ERA Posting', description: 'Verify ERA files are being received and posted correctly', priority: 'medium' },
+  ];
+
+  let tasksCreated = 0;
+  for (const provider of providers) {
+    for (const task of technicalTasks) {
+      const taskId = generateId();
+      const dueDate = new Date();
+      dueDate.setDate(dueDate.getDate() + 7); // 7 days from now
+
+      let taskStmt: any = db.prepare(`
+        INSERT INTO tasks (id, title, description, status, priority, due_date, related_type, related_id, owner_id, created_at)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `);
+      taskStmt = taskStmt.bind(taskId);
+      taskStmt = taskStmt.bind(task.title);
+      taskStmt = taskStmt.bind(task.description);
+      taskStmt = taskStmt.bind(task.priority);
+      taskStmt = taskStmt.bind(dueDate.toISOString().split('T')[0]);
+      taskStmt = taskStmt.bind('provider');
+      taskStmt = taskStmt.bind(provider.id);
+      taskStmt = taskStmt.bind(user?.id || null);
+      await taskStmt.run();
+      tasksCreated++;
+    }
+  }
+
+  return c.json({
+    message: `Created ${tasksCreated} technical tasks for ${providers.length} providers`,
+    data: { tasksCreated, providersCount: providers.length },
+  }, 201);
+});

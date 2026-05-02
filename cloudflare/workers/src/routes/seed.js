@@ -415,61 +415,123 @@ const floridaProviders = [
         specialty_primary: 'GI Surgery', taxonomy_codes: JSON.stringify(['208U00000X']),
     },
 ];
-// Seed Florida providers endpoint
+// Seed Florida providers endpoint - update existing providers with email if needed
 seedRoutes.post('/florida-providers', async (c) => {
     const db = c.env.DB;
-    // Check if providers already exist
+    // Check existing count
     let checkStmt = db.prepare('SELECT COUNT(*) as count FROM npi_providers WHERE state = ?');
     checkStmt = checkStmt.bind('FL');
     const existing = await checkStmt.first();
     const existingCount = existing?.count || 0;
-    if (existingCount > 10) {
-        return c.json({
-            message: 'Florida providers already seeded',
-            data: { existing_count: existingCount },
-        });
-    }
-    // Insert providers
-    let insertedCount = 0;
+    // Insert or update providers
+    let updatedCount = 0;
     for (const provider of floridaProviders) {
         try {
-            const id = generateId();
-            let stmt = db.prepare(`
-        INSERT INTO npi_providers (
-          id, npi, provider_type, first_name, last_name, organization_name,
-          address, city, state, zip, phone, email, specialty_primary,
-          taxonomy_codes, website, scraped_at, owner_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
-      `);
-            stmt = stmt.bind(id);
-            stmt = stmt.bind(provider.npi);
-            stmt = stmt.bind(provider.provider_type);
-            stmt = stmt.bind(provider.first_name);
-            stmt = stmt.bind(provider.last_name);
-            stmt = stmt.bind(provider.organization_name);
-            stmt = stmt.bind(provider.address);
-            stmt = stmt.bind(provider.city);
-            stmt = stmt.bind(provider.state);
-            stmt = stmt.bind(provider.zip);
-            stmt = stmt.bind(provider.phone);
-            stmt = stmt.bind(provider.email);
-            stmt = stmt.bind(provider.specialty_primary);
-            stmt = stmt.bind(provider.taxonomy_codes);
-            stmt = stmt.bind(provider.website || null);
-            stmt = stmt.bind(c.get('user')?.id || null);
-            await stmt.run();
-            insertedCount++;
+            // First check if provider exists
+            let checkExistingStmt = db.prepare('SELECT id FROM npi_providers WHERE npi = ?');
+            checkExistingStmt = checkExistingStmt.bind(provider.npi);
+            const existingProvider = await checkExistingStmt.first();
+            if (existingProvider) {
+                // Update existing provider with email - overwrite if not set
+                let updateStmt = db.prepare(`
+          UPDATE npi_providers
+          SET email = ?, phone = ?, specialty_primary = ?
+          WHERE npi = ?
+        `);
+                updateStmt = updateStmt.bind(provider.email);
+                updateStmt = updateStmt.bind(provider.phone);
+                updateStmt = updateStmt.bind(provider.specialty_primary);
+                updateStmt = updateStmt.bind(provider.npi);
+                const result = await updateStmt.run();
+                console.log('Update result for NPI', provider.npi, ':', result);
+                // D1 run() returns { success: true }, so we count it as processed
+                updatedCount++;
+            }
+            else {
+                // Insert new provider
+                const id = generateId();
+                let insertStmt = db.prepare(`
+          INSERT INTO npi_providers (
+            id, npi, provider_type, first_name, last_name, organization_name,
+            address, city, state, zip, phone, email, specialty_primary,
+            taxonomy_codes, website, scraped_at, owner_id
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        `);
+                insertStmt = insertStmt.bind(id);
+                insertStmt = insertStmt.bind(provider.npi);
+                insertStmt = insertStmt.bind(provider.provider_type);
+                insertStmt = insertStmt.bind(provider.first_name);
+                insertStmt = insertStmt.bind(provider.last_name);
+                insertStmt = insertStmt.bind(provider.organization_name);
+                insertStmt = insertStmt.bind(provider.address);
+                insertStmt = insertStmt.bind(provider.city);
+                insertStmt = insertStmt.bind(provider.state);
+                insertStmt = insertStmt.bind(provider.zip);
+                insertStmt = insertStmt.bind(provider.phone);
+                insertStmt = insertStmt.bind(provider.email);
+                insertStmt = insertStmt.bind(provider.specialty_primary);
+                insertStmt = insertStmt.bind(provider.taxonomy_codes);
+                insertStmt = insertStmt.bind(provider.website || null);
+                insertStmt = insertStmt.bind(c.get('user')?.id || null);
+                await insertStmt.run();
+                updatedCount++;
+            }
         }
         catch (e) {
-            console.error('Error inserting provider:', provider.npi, e);
+            console.error('Error processing provider:', provider.npi, e);
+        }
+    }
+    // Re-check count after updates
+    checkStmt = db.prepare('SELECT COUNT(*) as count FROM npi_providers WHERE state = ?');
+    checkStmt = checkStmt.bind('FL');
+    const newExisting = await checkStmt.first();
+    const finalCount = newExisting?.count || 0;
+    return c.json({
+        message: `Successfully processed Florida providers`,
+        data: {
+            total_in_batch: floridaProviders.length,
+            updated_or_inserted: updatedCount,
+            final_count: finalCount,
+        },
+    }, 201);
+});
+// Create technical tasks for first 5 providers
+seedRoutes.post('/create-technical-tasks', async (c) => {
+    const db = c.env.DB;
+    const user = c.get('user');
+    // Get first 5 providers
+    let stmt = db.prepare(`SELECT id, npi, organization_name, first_name, last_name FROM npi_providers ORDER BY created_at LIMIT 5`);
+    const result = await stmt.all();
+    const providers = result.results || [];
+    const technicalTasks = [
+        { title: 'Verify CAQH Profile', description: 'Confirm provider CAQH profile is complete and up to date', priority: 'high' },
+        { title: 'Submit EDI to Availity', description: 'Submit EDI enrollment forms to Availity for claims processing', priority: 'high' },
+        { title: 'Test ERA Posting', description: 'Verify ERA files are being received and posted correctly', priority: 'medium' },
+    ];
+    let tasksCreated = 0;
+    for (const provider of providers) {
+        for (const task of technicalTasks) {
+            const taskId = generateId();
+            const dueDate = new Date();
+            dueDate.setDate(dueDate.getDate() + 7); // 7 days from now
+            let taskStmt = db.prepare(`
+        INSERT INTO tasks (id, title, description, status, priority, due_date, related_type, related_id, owner_id, created_at)
+        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      `);
+            taskStmt = taskStmt.bind(taskId);
+            taskStmt = taskStmt.bind(task.title);
+            taskStmt = taskStmt.bind(task.description);
+            taskStmt = taskStmt.bind(task.priority);
+            taskStmt = taskStmt.bind(dueDate.toISOString().split('T')[0]);
+            taskStmt = taskStmt.bind('provider');
+            taskStmt = taskStmt.bind(provider.id);
+            taskStmt = taskStmt.bind(user?.id || null);
+            await taskStmt.run();
+            tasksCreated++;
         }
     }
     return c.json({
-        message: `Successfully seeded ${insertedCount} Florida providers`,
-        data: {
-            total_in_batch: floridaProviders.length,
-            inserted: insertedCount,
-            existing_count: existingCount,
-        },
+        message: `Created ${tasksCreated} technical tasks for ${providers.length} providers`,
+        data: { tasksCreated, providersCount: providers.length },
     }, 201);
 });

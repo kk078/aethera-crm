@@ -39,21 +39,14 @@ tasksRoutes.get('/', async (c) => {
   }
 
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT COUNT(*) as total FROM tasks ${whereClause}`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const countResult = await stmt.first();
+  const countBindings = [...bindings];
+  const countResult = await db.prepare(`SELECT COUNT(*) as total FROM tasks ${whereClause}`).bind(...countBindings).first();
   const total = countResult?.total || 0;
 
   const offset = (pagination.page - 1) * pagination.per_page;
-  stmt = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`) as any;
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  stmt = stmt.bind(pagination.per_page);
-  stmt = stmt.bind(offset);
-  const results: any = await stmt.all();
+  const queryBindings = [...bindings, pagination.per_page, offset];
+  const result: any = await db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`).bind(...queryBindings).all();
+  const results = result.results || [];
 
   const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
 
@@ -73,9 +66,7 @@ tasksRoutes.get('/', async (c) => {
 tasksRoutes.get('/:id', async (c) => {
   const { id } = c.req.param();
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare('SELECT * FROM tasks WHERE id = ?');
-  stmt = stmt.bind(id);
-  const task = await stmt.first();
+  const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
   if (!task) {
     throw new HTTPException(404, { message: 'Task not found' });
   }
@@ -90,31 +81,14 @@ tasksRoutes.post('/', async (c) => {
 
   const id = generateId();
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`
+  await db.prepare(`
     INSERT INTO tasks (id, title, description, status, priority, due_date, related_type, related_id, owner_id)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  stmt = stmt.bind(id);
-  stmt = stmt.bind(validated.title);
-  stmt = stmt.bind(validated.description || null);
-  stmt = stmt.bind(validated.status || 'pending');
-  stmt = stmt.bind(validated.priority || 'medium');
-  stmt = stmt.bind(validated.due_date || null);
-  stmt = stmt.bind(validated.related_type || null);
-  stmt = stmt.bind(validated.related_id || null);
-  stmt = stmt.bind(user?.id);
-  await stmt.run();
+  `).bind(id, validated.title, validated.description || null, validated.status || 'pending', validated.priority || 'medium', validated.due_date || null, validated.related_type || null, validated.related_id || null, user?.id).run();
 
-  stmt = db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`) as any;
-  stmt = stmt.bind(user?.id);
-  stmt = stmt.bind('create');
-  stmt = stmt.bind('tasks');
-  stmt = stmt.bind(id);
-  await stmt.run();
+  await db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`).bind(user?.id, 'create', 'tasks', id).run();
 
-  stmt = db.prepare('SELECT * FROM tasks WHERE id = ?') as any;
-  stmt = stmt.bind(id);
-  const task = await stmt.first();
+  const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
 
   return c.json(
     {
@@ -133,9 +107,7 @@ tasksRoutes.put('/:id', async (c) => {
   const validated = updateTaskSchema.parse(body);
 
   const db = (c as any).env.DB as any;
-  let existingStmt: any = db.prepare('SELECT * FROM tasks WHERE id = ?');
-  existingStmt = existingStmt.bind(id);
-  const existing = await existingStmt.first();
+  const existing = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
   if (!existing) {
     throw new HTTPException(404, { message: 'Task not found' });
   }
@@ -161,15 +133,9 @@ tasksRoutes.put('/:id', async (c) => {
   updates.push('updated_at = CURRENT_TIMESTAMP');
   bindings.push(id);
 
-  let stmt: any = db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  await stmt.run();
+  await db.prepare(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`).bind(...bindings).run();
 
-  stmt = db.prepare('SELECT * FROM tasks WHERE id = ?') as any;
-  stmt = stmt.bind(id);
-  const task = await stmt.first();
+  const task = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
 
   return c.json({
     message: 'Task updated successfully',
@@ -182,24 +148,13 @@ tasksRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
   const db = (c as any).env.DB as any;
-
-  let existingStmt: any = db.prepare('SELECT * FROM tasks WHERE id = ?');
-  existingStmt = existingStmt.bind(id);
-  const existing = await existingStmt.first();
+  const existing = await db.prepare('SELECT * FROM tasks WHERE id = ?').bind(id).first();
   if (!existing) {
     throw new HTTPException(404, { message: 'Task not found' });
   }
 
-  let deleteStmt: any = db.prepare('DELETE FROM tasks WHERE id = ?');
-  deleteStmt = deleteStmt.bind(id);
-  await deleteStmt.run();
-
-  let auditStmt: any = db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`);
-  auditStmt = auditStmt.bind(user?.id);
-  auditStmt = auditStmt.bind('delete');
-  auditStmt = auditStmt.bind('tasks');
-  auditStmt = auditStmt.bind(id);
-  await auditStmt.run();
+  await db.prepare('DELETE FROM tasks WHERE id = ?').bind(id).run();
+  await db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`).bind(user?.id, 'delete', 'tasks', id).run();
 
   return c.json({ message: 'Task deleted successfully' });
 });
@@ -218,11 +173,7 @@ tasksRoutes.get('/status/:status', async (c) => {
   }
 
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY due_date ASC`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const tasks: any = await stmt.all();
+  const tasks: any = await db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY due_date ASC`).bind(...bindings).all();
 
   return c.json({
     data: tasks || [],
@@ -242,11 +193,7 @@ tasksRoutes.get('/overdue/list', async (c) => {
   }
 
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY due_date ASC`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const tasks: any = await stmt.all();
+  const tasks: any = await db.prepare(`SELECT * FROM tasks ${whereClause} ORDER BY due_date ASC`).bind(...bindings).all();
 
   return c.json({
     data: tasks || [],

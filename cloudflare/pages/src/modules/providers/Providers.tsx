@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Card, Typography, Table, Button, Input, Space, Tag, Modal, Form, Spin, Alert, Select, Row, Col, message } from 'antd';
-import { SearchOutlined, ImportOutlined, EyeOutlined, ReloadOutlined, PhoneOutlined, MailOutlined, UserAddOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Card, Typography, Table, Button, Input, Space, Tag, Modal, Form, Spin, Alert, Select, Row, Col, message, Checkbox } from 'antd';
+import { SearchOutlined, ImportOutlined, EyeOutlined, ReloadOutlined, PhoneOutlined, MailOutlined, UserAddOutlined, DeleteOutlined, CloudUploadOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { useAuthStore } from '@stores/authStore';
 import ProviderDetail from './ProviderDetail';
+import { leadsAPI, onboardingAPI } from '@services/api';
 
 const { Title, Paragraph } = Typography;
 
@@ -46,9 +47,282 @@ const Providers: React.FC = () => {
   const [viewModalVisible, setViewModalVisible] = useState(false);
   const [selectedNpi, setSelectedNpi] = useState<string | null>(null);
   const [leadLoading, setLeadLoading] = useState<string | null>(null);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [showOnlyLeads, setShowOnlyLeads] = useState(false);
   const [importForm] = Form.useForm();
+  const [selectedRows, setSelectedRows] = useState<string[]>([]);
+  const [bulkActionLoading, setBulkActionLoading] = useState(false);
 
   const token = useAuthStore((state) => state.token);
+
+  // Selection helpers
+  const handleSelectChange = (npi: string, checked: boolean) => {
+    if (checked) {
+      setSelectedRows(prev => [...prev, npi]);
+    } else {
+      setSelectedRows(prev => prev.filter(item => item !== npi));
+    }
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedRows(providers.map(p => p.npi));
+    } else {
+      setSelectedRows([]);
+    }
+  };
+
+  // Bulk technical setup operations
+  const handleBulkInitializeTechnicalSetup = async () => {
+    if (selectedRows.length === 0) {
+      message.warning('Please select providers first');
+      return;
+    }
+
+    setBulkActionLoading(true);
+    try {
+      const currentToken = useAuthStore.getState().token;
+      message.loading({ content: `Initializing technical setup for ${selectedRows.length} providers...`, key: 'bulk-tech-setup' });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const npi of selectedRows) {
+        try {
+          // First get provider to get their ID
+          const providerRes = await fetch(`https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/providers/${npi}`, {
+            headers: { 'Authorization': `Bearer ${currentToken}` },
+          });
+          if (!providerRes.ok) continue;
+
+          const providerData = await providerRes.json();
+          const providerId = providerData.data?.id;
+
+          if (providerId) {
+            // Create technical setup record
+            const payload = {
+              clearinghouse_id: null,
+              clearinghouse_name: null,
+              era_enrollment_status: 'not_started',
+              edi_enrollment_status: 'not_started',
+              credentialing_status: 'pending',
+              caqh_verified: 0,
+              setup_complete: 0,
+            };
+
+            const setupRes = await fetch(
+              `https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/onboarding/technical-setup/provider/${providerId}`,
+              {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${currentToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+              }
+            );
+
+            if (setupRes.ok) {
+              successCount++;
+            } else {
+              errorCount++;
+            }
+          }
+        } catch (err) {
+          errorCount++;
+          console.error('Error initializing tech setup for', npi, err);
+        }
+      }
+
+      message.destroy('bulk-tech-setup');
+      message.success(`Bulk technical setup initialized: ${successCount} succeeded, ${errorCount} errors`);
+
+      // Refresh the list
+      loadProviders(pagination.page, searchApplied);
+      setSelectedRows([]);
+    } catch (err: any) {
+      message.destroy('bulk-tech-setup');
+      message.error(err.message || 'Failed to initialize technical setup');
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkUpdateEraStatus = async (status: string) => {
+    if (selectedRows.length === 0) {
+      message.warning('Please select providers first');
+      return;
+    }
+
+    setBulkActionLoading(true);
+    try {
+      const currentToken = useAuthStore.getState().token;
+      message.loading({ content: `Updating ERA status to ${status} for ${selectedRows.length} providers...`, key: 'bulk-era-status' });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const npi of selectedRows) {
+        try {
+          // Get provider to get their ID
+          const providerRes = await fetch(`https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/providers/${npi}`, {
+            headers: { 'Authorization': `Bearer ${currentToken}` },
+          });
+          if (!providerRes.ok) continue;
+
+          const providerData = await providerRes.json();
+          const providerId = providerData.data?.id;
+
+          if (providerId) {
+            // Get current technical setup
+            const setupRes = await fetch(
+              `https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/onboarding/technical-setup/provider/${providerId}`,
+              {
+                headers: { 'Authorization': `Bearer ${currentToken}` },
+              }
+            );
+
+            if (setupRes.ok) {
+              const setupData = await setupRes.json();
+              const currentSetup = setupData.data;
+
+              if (currentSetup) {
+                // Update only ERA status
+                const payload = {
+                  clearinghouse_id: currentSetup.clearinghouse_id,
+                  clearinghouse_name: currentSetup.clearinghouse_name,
+                  era_enrollment_status: status,
+                  edi_enrollment_status: currentSetup.edi_enrollment_status,
+                  credentialing_status: currentSetup.credentialing_status,
+                  caqh_verified: currentSetup.caqh_verified,
+                  setup_complete: currentSetup.setup_complete,
+                };
+
+                const updateRes = await fetch(
+                  `https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/onboarding/technical-setup/provider/${providerId}`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${currentToken}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                  }
+                );
+
+                if (updateRes.ok) {
+                  successCount++;
+                } else {
+                  errorCount++;
+                }
+              }
+            }
+          }
+        } catch (err) {
+          errorCount++;
+          console.error('Error updating ERA status for', npi, err);
+        }
+      }
+
+      message.destroy('bulk-era-status');
+      message.success(`Bulk ERA status updated to ${status}: ${successCount} succeeded, ${errorCount} errors`);
+
+      // Refresh the list
+      loadProviders(pagination.page, searchApplied);
+      setSelectedRows([]);
+    } catch (err: any) {
+      message.destroy('bulk-era-status');
+      message.error(err.message || `Failed to update ERA status to ${status}`);
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkUpdateClearinghouse = async (clearinghouseId: string, clearinghouseName: string) => {
+    if (selectedRows.length === 0) {
+      message.warning('Please select providers first');
+      return;
+    }
+
+    setBulkActionLoading(true);
+    try {
+      const currentToken = useAuthStore.getState().token;
+      message.loading({ content: `Setting clearinghouse to ${clearinghouseName || clearinghouseId} for ${selectedRows.length} providers...`, key: 'bulk-clearinghouse' });
+
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const npi of selectedRows) {
+        try {
+          const providerRes = await fetch(`https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/providers/${npi}`, {
+            headers: { 'Authorization': `Bearer ${currentToken}` },
+          });
+          if (!providerRes.ok) continue;
+
+          const providerData = await providerRes.json();
+          const providerId = providerData.data?.id;
+
+          if (providerId) {
+            const setupRes = await fetch(
+              `https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/onboarding/technical-setup/provider/${providerId}`,
+              {
+                headers: { 'Authorization': `Bearer ${currentToken}` },
+              }
+            );
+
+            if (setupRes.ok) {
+              const setupData = await setupRes.json();
+              const currentSetup = setupData.data;
+
+              if (currentSetup) {
+                const payload = {
+                  clearinghouse_id: clearinghouseId,
+                  clearinghouse_name: clearinghouseName,
+                  era_enrollment_status: currentSetup.era_enrollment_status,
+                  edi_enrollment_status: currentSetup.edi_enrollment_status,
+                  credentialing_status: currentSetup.credentialing_status,
+                  caqh_verified: currentSetup.caqh_verified,
+                  setup_complete: currentSetup.setup_complete,
+                };
+
+                const updateRes = await fetch(
+                  `https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/onboarding/technical-setup/provider/${providerId}`,
+                  {
+                    method: 'POST',
+                    headers: {
+                      'Authorization': `Bearer ${currentToken}`,
+                      'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload),
+                  }
+                );
+
+                if (updateRes.ok) {
+                  successCount++;
+                } else {
+                  errorCount++;
+                }
+              }
+            }
+          }
+        } catch (err) {
+          errorCount++;
+          console.error('Error updating clearinghouse for', npi, err);
+        }
+      }
+
+      message.destroy('bulk-clearinghouse');
+      message.success(`Bulk clearinghouse set to ${clearinghouseName || clearinghouseId}: ${successCount} succeeded, ${errorCount} errors`);
+
+      loadProviders(pagination.page, searchApplied);
+      setSelectedRows([]);
+    } catch (err: any) {
+      message.destroy('bulk-clearinghouse');
+      message.error(err.message || 'Failed to update clearinghouse');
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
 
   const loadProviders = useCallback(async (page: number = 1, search?: string) => {
     const currentToken = useAuthStore.getState().token;
@@ -101,7 +375,11 @@ const Providers: React.FC = () => {
         })
       );
 
-      setProviders(leadChecks);
+      // Filter to show only non-leads if the filter is enabled
+      const filteredProviders = showOnlyLeads
+        ? leadChecks.filter(p => !p.is_lead)
+        : leadChecks;
+      setProviders(filteredProviders);
       setPagination(result.pagination || pagination);
     } catch (err: any) {
       console.error('[Providers] Error:', err);
@@ -162,6 +440,69 @@ const Providers: React.FC = () => {
       message.error(err.message || 'Failed to add lead');
     } finally {
       setLeadLoading(null);
+    }
+  };
+
+  // Bulk add providers to leads (for outreach campaigns)
+  const handleBulkAddToLeads = async () => {
+    setBulkLoading(true);
+    try {
+      const currentToken = useAuthStore.getState().token;
+      const providersToAdd = providers.filter(p => !p.is_lead);
+
+      if (providersToAdd.length === 0) {
+        message.info('No providers available to add');
+        setBulkLoading(false);
+        return;
+      }
+
+      message.loading({ content: `Adding ${providersToAdd.length} providers to leads...`, key: 'bulk-add' });
+
+      let successCount = 0;
+      let alreadyLeadCount = 0;
+      let errorCount = 0;
+
+      // Add in batches to avoid overwhelming the server
+      const batchSize = 10;
+      for (let i = 0; i < providersToAdd.length; i += batchSize) {
+        const batch = providersToAdd.slice(i, i + batchSize);
+
+        const promises = batch.map(p =>
+          fetch(`https://aethera-crm-api.aetherahealthcare.workers.dev/api/v1/provider-leads/${p.npi}/lead`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${currentToken}`,
+              'Content-Type': 'application/json',
+            },
+          }).then(res => res.json().then(data => ({ status: res.status, data, npi: p.npi })))
+        );
+
+        const results = await Promise.all(promises);
+
+        results.forEach(res => {
+          if (res.status === 201) {
+            successCount++;
+            setProviders(prev => prev.map(p => p.npi === res.npi ? { ...p, is_lead: true } : p));
+          } else if (res.status === 409) {
+            alreadyLeadCount++;
+            setProviders(prev => prev.map(p => p.npi === res.npi ? { ...p, is_lead: true } : p));
+          } else {
+            errorCount++;
+            console.error('Error adding lead:', res.data);
+          }
+        });
+      }
+
+      message.destroy('bulk-add');
+      message.success(`Bulk add complete: ${successCount} added, ${alreadyLeadCount} already leads, ${errorCount} errors`);
+
+      // Refresh the list
+      loadProviders(pagination.page, searchApplied);
+    } catch (err: any) {
+      message.destroy('bulk-add');
+      message.error(err.message || 'Failed to bulk add providers');
+    } finally {
+      setBulkLoading(false);
     }
   };
 
@@ -249,6 +590,23 @@ const Providers: React.FC = () => {
   };
 
   const columns = [
+    {
+      title: (
+        <Checkbox
+          checked={providers.length > 0 && selectedRows.length === providers.length}
+          onChange={(e) => handleSelectAll(e.target.checked)}
+        />
+      ),
+      key: 'selection',
+      render: (record: Provider) => (
+        <Checkbox
+          checked={selectedRows.includes(record.npi)}
+          onChange={(e) => handleSelectChange(record.npi, e.target.checked)}
+        />
+      ),
+      width: 60,
+      fixed: 'left' as const,
+    },
     {
       title: 'Provider Name',
       key: 'name',
@@ -375,7 +733,7 @@ const Providers: React.FC = () => {
 
       <Card style={{ marginBottom: '24px' }}>
         <Row gutter={[16, 16]} align="middle">
-          <Col xs={24} md={6}>
+          <Col xs={24} md={5}>
             <Select value={searchField} onChange={setSearchField} style={{ width: '100%' }}>
               <Select.Option value="name">Name</Select.Option>
               <Select.Option value="npi">NPI</Select.Option>
@@ -383,7 +741,7 @@ const Providers: React.FC = () => {
               <Select.Option value="city">City</Select.Option>
             </Select>
           </Col>
-          <Col xs={24} md={12}>
+          <Col xs={24} md={9}>
             <Input
               placeholder="Search providers..."
               prefix={<SearchOutlined />}
@@ -393,8 +751,53 @@ const Providers: React.FC = () => {
               style={{ width: '100%' }}
             />
           </Col>
-          <Col xs={24} md={6}>
+          <Col xs={24} md={10}>
             <Space>
+              <Button
+                type={showOnlyLeads ? 'primary' : 'default'}
+                icon={showOnlyLeads ? <DeleteOutlined /> : <UserAddOutlined />}
+                onClick={() => setShowOnlyLeads(!showOnlyLeads)}
+              >
+                {showOnlyLeads ? 'Show All Providers' : 'Show Only Not Leads'}
+              </Button>
+              <Button
+                type="primary"
+                icon={<CloudUploadOutlined />}
+                loading={bulkLoading}
+                onClick={handleBulkAddToLeads}
+              >
+                Bulk Add to Leads
+              </Button>
+              {/* Bulk Technical Setup Actions */}
+              {selectedRows.length > 0 && (
+                <Space size="small">
+                  <Button
+                    type="default"
+                    icon={<CheckCircleOutlined />}
+                    loading={bulkActionLoading}
+                    onClick={handleBulkInitializeTechnicalSetup}
+                  >
+                    Init Technical Setup
+                  </Button>
+                  <Select
+                    defaultValue="pending"
+                    style={{ width: 120 }}
+                    onChange={(value) => handleBulkUpdateEraStatus(value)}
+                    disabled={selectedRows.length === 0 || bulkActionLoading}
+                    options={[
+                      { value: 'pending', label: 'Set ERA: Pending' },
+                      { value: 'active', label: 'Set ERA: Active' },
+                      { value: 'not_started', label: 'Set ERA: Not Started' },
+                    ]}
+                  />
+                  <Input.Search
+                    placeholder="Clearinghouse ID"
+                    style={{ width: 120 }}
+                    onSearch={(value) => handleBulkUpdateClearinghouse(value, value)}
+                    disabled={selectedRows.length === 0 || bulkActionLoading}
+                  />
+                </Space>
+              )}
               <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch}>Search</Button>
               {searchApplied && <Button icon={<ReloadOutlined />} onClick={handleClearSearch}>Clear</Button>}
             </Space>
@@ -402,6 +805,7 @@ const Providers: React.FC = () => {
         </Row>
         <div style={{ marginTop: '16px', fontSize: '14px', color: '#666' }}>
           Showing <strong>{providers.length}</strong> of <strong>{pagination.total}</strong> providers
+          {showOnlyLeads && <Tag color="orange" style={{ marginLeft: '8px' }}>Filter: Only non-leads</Tag>}
         </div>
       </Card>
 

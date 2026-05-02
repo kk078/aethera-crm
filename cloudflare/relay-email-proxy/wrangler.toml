@@ -1,0 +1,10 @@
+name = "relay-email-proxy"
+main = "src/index.js"
+compatibility_date = "2026-04-30"
+
+# Environment variables for Gmail OAuth configuration
+[env.production]
+GMAIL_CLIENT_ID = "280155650451-afhvc54egr4tm8tv24utp6mfcqe8qbku"
+GMAIL_CLIENT_SECRET = "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"
+GMAIL_FROM_EMAIL = "info@aetherahealthcare.com"
+GMAIL_FROM_NAME = "Aethera Healthcare"

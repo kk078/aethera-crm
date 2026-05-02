@@ -30,9 +30,10 @@ backupRoutes.post('/trigger', async (c) => {
         const exportData = [];
         for (const table of tables) {
             const result = await c.env.DB.prepare(`SELECT * FROM ${table}`).all();
-            if (result.results && result.results.length > 0) {
+            const rows = result.results || [];
+            if (rows.length > 0) {
                 exportData.push(`-- Table: ${table}`);
-                for (const row of result.results) {
+                for (const row of rows) {
                     const columns = Object.keys(row).join(', ');
                     const values = Object.values(row).map(v => typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v).join(', ');
                     exportData.push(`INSERT INTO ${table} (${columns}) VALUES (${values});`);
@@ -81,13 +82,14 @@ backupRoutes.get('/list', async (c) => {
     if (!user || user.role !== 'admin') {
         throw new HTTPException(403, { message: 'Admin access required' });
     }
-    const backups = await c.env.DB.prepare(`
-    SELECT * FROM backups 
+    const result = await c.env.DB.prepare(`
+    SELECT * FROM backups
     ORDER BY created_at DESC
     LIMIT 50
   `).all();
+    const backups = result.results || [];
     return c.json({
-        data: backups.results || [],
+        data: backups || [],
     });
 });
 // Get backup status
@@ -143,14 +145,15 @@ backupRoutes.post('/cleanup', async (c) => {
     const retentionDays = 60;
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
-    const oldBackups = await c.env.DB.prepare(`
-    SELECT * FROM backups 
+    const result = await c.env.DB.prepare(`
+    SELECT * FROM backups
     WHERE created_at < ? AND status = 'completed'
   `)
         .bind(cutoffDate.toISOString())
         .all();
+    const oldBackups = result.results || [];
     let deletedCount = 0;
-    for (const backup of oldBackups.results || []) {
+    for (const backup of oldBackups || []) {
         try {
             await c.env.STORAGE.delete(backup.file_path);
             await c.env.DB.prepare('DELETE FROM backups WHERE id = ?').bind(backup.id).run();

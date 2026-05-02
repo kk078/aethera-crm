@@ -1,0 +1,69 @@
+#!/bin/sh
+# Pre-commit hook: Prevent try blocks without catch/finally
+# This hook checks all TypeScript files in src/routes/ for missing catch/finally blocks
+
+echo "Checking for syntax regressions..."
+
+# Files to check
+ROUTES_DIR="src/routes"
+ERRORS=0
+
+# Find all try blocks and check if they have a matching catch or finally
+find_try_blocks() {
+  grep -rn "try\s*{" "$ROUTES_DIR" --include="*.ts" 2>/dev/null || true
+}
+
+# Check for orphaned try blocks (try without catch or finally)
+check_orphaned_try() {
+  local file="$1"
+  local line_num="$2"
+
+  # Find the corresponding catch or finally block within a reasonable distance
+  # Look ahead up to 20 lines for a matching catch or finally
+  local try_line="$line_num"
+  local found_catch_or_finally=0
+
+  # Read the file and check for catch/finally within range
+  tail -n +"$try_line" "$file" | head -n 20 | grep -qE "^\s*(catch|finally)\s*{" && found_catch_or_finally=1
+
+  if [ "$found_catch_or_finally" -eq 0 ]; then
+    echo "ERROR: Orphaned try block at $file:$line_num - missing catch or finally block"
+    return 1
+  fi
+  return 0
+}
+
+# Main check
+echo "Checking for try blocks without catch/finally..."
+
+for file in "$ROUTES_DIR"/*.ts; do
+  if [ -f "$file" ]; then
+    # Find all try blocks with line numbers
+    while IFS=: read -r filepath linenum; do
+      # Skip comments and multiline try blocks
+      if ! grep -q "//.*try" "$filepath" || ! echo "$filepath:$linenum" | grep -q "//"; then
+        check_orphaned_try "$filepath" "$linenum" || ERRORS=$((ERRORS + 1))
+      fi
+    done < <(grep -n "try\s*{" "$file" 2>/dev/null)
+  fi
+done
+
+if [ "$ERRORS" -gt 0 ]; then
+  echo ""
+  echo "❌ Syntax check failed. Please add catch/finally blocks to all try statements."
+  exit 1
+fi
+
+echo "✅ Syntax check passed!"
+
+# Run TypeScript build as well
+echo ""
+echo "Running TypeScript build..."
+if ! npm run build 2>&1; then
+  echo "❌ TypeScript build failed."
+  exit 1
+fi
+
+echo "✅ TypeScript build passed!"
+echo ""
+echo "Pre-commit checks completed successfully."

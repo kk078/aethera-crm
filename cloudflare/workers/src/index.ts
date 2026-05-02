@@ -19,19 +19,37 @@ import { twilioRoutes } from './routes/twilio';
 import { workflowsRoutes } from './routes/workflows';
 import { settingsRoutes } from './routes/settings';
 import { backupRoutes } from './routes/backup';
+import { onboardingRoutes } from './routes/onboarding';
+import { debugRoutes } from './routes/debug';
 import { providerLeadRoutes } from './routes/provider-leads';
 import { seedRoutes } from './routes/seed';
+import { callQueueRoutes } from './routes/call-queue';
+import { callAnalyticsRoutes } from './routes/call-analytics';
+import { calendarIntegrationRoutes } from './routes/calendar-integration';
 
 // Import middleware
 import { authMiddleware, optionalAuthMiddleware } from './middleware/auth';
 import { rateLimitMiddleware } from './middleware/rateLimit';
 import { errorHandler } from './middleware/errorHandler';
+import { schemaSentinelMiddleware } from './middleware/schemaSentinel';
 
 // Import database initialization
 import { initializeDatabase } from './db/init';
 
 // Create Hono app
 const app = new Hono();
+
+// Environment logging - prints all available bindings
+app.use('*', async (c, next) => {
+  const env = c.env as any;
+  console.log('[ENV] Available bindings:', Object.keys(env));
+  if (env.DB) {
+    console.log('[ENV] DB binding available');
+  } else {
+    console.warn('[ENV] WARNING: DB binding not found!');
+  }
+  await next();
+});
 
 // Global middleware
 app.use('*', logger());
@@ -67,6 +85,12 @@ app.get('/health', (c) => {
 // API routes
 const apiRoutes = app.basePath('/api/v1');
 
+// Error handling for API routes
+apiRoutes.use('*', errorHandler);
+
+// Schema Sentinel - checks table existence before route execution
+// app.use('*', schemaSentinelMiddleware);
+
 // Public routes (no auth required)
 apiRoutes.route('/public/providers', providersRoutes);
 
@@ -74,22 +98,44 @@ apiRoutes.route('/public/providers', providersRoutes);
 apiRoutes.route('/auth', authRoutes);
 
 // Protected routes (auth required) - specific paths only
+apiRoutes.use('/contacts', authMiddleware);
 apiRoutes.use('/contacts/*', authMiddleware);
+apiRoutes.use('/organizations', authMiddleware);
 apiRoutes.use('/organizations/*', authMiddleware);
+apiRoutes.use('/leads', authMiddleware);
 apiRoutes.use('/leads/*', authMiddleware);
+apiRoutes.use('/deals', authMiddleware);
 apiRoutes.use('/deals/*', authMiddleware);
+apiRoutes.use('/activities', authMiddleware);
 apiRoutes.use('/activities/*', authMiddleware);
+apiRoutes.use('/emails', authMiddleware);
 apiRoutes.use('/emails/*', authMiddleware);
+apiRoutes.use('/campaigns', authMiddleware);
 apiRoutes.use('/campaigns/*', authMiddleware);
+apiRoutes.use('/tasks', authMiddleware);
 apiRoutes.use('/tasks/*', authMiddleware);
+apiRoutes.use('/ai', authMiddleware);
 apiRoutes.use('/ai/*', authMiddleware);
+apiRoutes.use('/workflows', authMiddleware);
 apiRoutes.use('/workflows/*', authMiddleware);
+apiRoutes.use('/settings', authMiddleware);
 apiRoutes.use('/settings/*', authMiddleware);
+apiRoutes.use('/backup', authMiddleware);
 apiRoutes.use('/backup/*', authMiddleware);
+apiRoutes.use('/provider-leads', authMiddleware);
 apiRoutes.use('/provider-leads/*', authMiddleware);
 apiRoutes.use('/providers/import', authMiddleware);
+apiRoutes.use('/onboarding', authMiddleware);
+apiRoutes.use('/onboarding/*', authMiddleware);
+apiRoutes.use('/call-queue', authMiddleware);
+apiRoutes.use('/call-queue/*', authMiddleware);
+apiRoutes.use('/call-analytics', authMiddleware);
+apiRoutes.use('/call-analytics/*', authMiddleware);
+apiRoutes.use('/calendar-integration', authMiddleware);
+apiRoutes.use('/calendar-integration/*', authMiddleware);
 
 // Twilio routes (optional auth - webhooks are public, protected routes check inside)
+apiRoutes.use('/twilio', optionalAuthMiddleware);
 apiRoutes.use('/twilio/*', optionalAuthMiddleware);
 apiRoutes.route('/twilio', twilioRoutes);
 apiRoutes.route('/ai', aiRoutes);
@@ -107,6 +153,11 @@ apiRoutes.route('/settings', settingsRoutes);
 apiRoutes.route('/backup', backupRoutes);
 apiRoutes.route('/provider-leads', providerLeadRoutes);
 apiRoutes.route('/seed', seedRoutes);
+apiRoutes.route('/onboarding', onboardingRoutes);
+apiRoutes.route('/debug', debugRoutes);
+apiRoutes.route('/call-queue', callQueueRoutes);
+apiRoutes.route('/call-analytics', callAnalyticsRoutes);
+apiRoutes.route('/calendar-integration', calendarIntegrationRoutes);
 
 // 404 handler
 app.notFound((c) => {

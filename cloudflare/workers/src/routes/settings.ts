@@ -7,8 +7,9 @@ export const settingsRoutes = new Hono<AppEnv>();
 
 // List all settings
 settingsRoutes.get('/', async (c) => {
-  const settings = await ((c as any).env as any).DB.prepare('SELECT * FROM settings ORDER BY category, key')
+  const result = await ((c as any).env as any).DB.prepare('SELECT * FROM settings ORDER BY category, key')
     .all();
+  const settings = result.results || [];
 
   // Group settings by category
   const grouped: Record<string, any> = {};
@@ -29,11 +30,12 @@ settingsRoutes.get('/', async (c) => {
 settingsRoutes.get('/:category', async (c) => {
   const { category } = c.req.param();
 
-  const settings = await ((c as any).env as any).DB.prepare(
+  const result = await ((c as any).env as any).DB.prepare(
     'SELECT * FROM settings WHERE category = ? ORDER BY key'
   )
     .bind(category)
     .all();
+  const settings = result.results || [];
 
   const grouped: Record<string, any> = {};
   for (const setting of settings || []) {
@@ -160,9 +162,10 @@ settingsRoutes.put('/integrations/:name', async (c) => {
 
 // List all integrations
 settingsRoutes.get('/integrations/list', async (c) => {
-  const integrations = await ((c as any).env as any).DB.prepare(
+  const result = await ((c as any).env as any).DB.prepare(
     'SELECT id, name, type, is_active, last_sync, created_at, updated_at FROM integrations ORDER BY name'
   ).all();
+  const integrations = result.results || [];
 
   return c.json({
     data: integrations || [],

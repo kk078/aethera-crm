@@ -36,7 +36,8 @@ campaignsRoutes.get('/', async (c) => {
     }
     stmt = stmt.bind(pagination.per_page);
     stmt = stmt.bind(offset);
-    const results = await stmt.all();
+    const result = await stmt.all();
+    const results = result.results || [];
     const paginationInfo = calculatePagination(pagination.page, pagination.per_page, countResult?.total || 0);
     return c.json({
         data: results || [],

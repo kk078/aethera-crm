@@ -8,16 +8,84 @@ import dayjs from 'dayjs';
 const { Title } = Typography;
 const { TextArea } = Input;
 
+// Payer priority for task sorting - high volume payers first
+const PAYER_PRIORITY: Record<string, number> = {
+  medicare: 1,
+  bcbs: 2,
+  medicaid: 3,
+  united: 4,
+  humana: 5,
+  aetna: 6,
+  cigna: 7,
+  centene: 8,
+};
+
+// Storage keys for persisting user preferences
+const SORT_PREFERENCE_KEY = 'tasks_sort_preference';
+
+// Helper to get payer priority
+const getPayerPriority = (description: string, priority: string): number => {
+  const descLower = (description || '').toLowerCase();
+  for (const [payer, prio] of Object.entries(PAYER_PRIORITY)) {
+    if (descLower.includes(payer)) return prio;
+  }
+  // Also check the actual priority field
+  if (priority === 'high' || priority === 'urgent') return 9;
+  if (priority === 'medium') return 10;
+  return 11;
+};
+
+// Sort task helper function
+const sortTasksByPayerPriority = (tasks: any[], sortByDueDate: boolean = true) => {
+  return tasks.sort((a: any, b: any) => {
+    const priorityA = getPayerPriority(a.description, a.priority);
+    const priorityB = getPayerPriority(b.description, b.priority);
+    // Sort by priority (lower number = higher priority)
+    if (priorityA !== priorityB) return priorityA - priorityB;
+    // Then by due date (soonest first) if enabled
+    if (sortByDueDate && a.due_date && b.due_date) return new Date(a.due_date).getTime() - new Date(b.due_date).getTime();
+    // Then by created date
+    return new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime();
+  });
+};
+
+// Get stored sort preference
+const getSortPreference = (): boolean => {
+  try {
+    const stored = localStorage.getItem(SORT_PREFERENCE_KEY);
+    return stored ? JSON.parse(stored) : true;
+  } catch {
+    return true;
+  }
+};
+
+// Save sort preference
+const saveSortPreference = (sortByDueDate: boolean) => {
+  try {
+    localStorage.setItem(SORT_PREFERENCE_KEY, JSON.stringify(sortByDueDate));
+  } catch {
+    // Ignore storage errors
+  }
+};
+
 const Tasks: React.FC = () => {
   const queryClient = useQueryClient();
   const [modalVisible, setModalVisible] = React.useState(false);
   const [editingTask, setEditingTask] = React.useState<any>(null);
   const [form] = Form.useForm();
+  // Sort preference state - persists to localStorage
+  const [sortByDueDate, setSortByDueDate] = React.useState<boolean>(() => getSortPreference());
 
   const { data, isLoading } = useQuery({
     queryKey: ['tasks'],
     queryFn: () => tasksAPI.list(),
   });
+
+  // Auto-sort tasks by payer priority (persisting preference)
+  const sortedTasks = React.useMemo(() => {
+    const tasks = data?.data?.data || [];
+    return sortTasksByPayerPriority(tasks, sortByDueDate);
+  }, [data, sortByDueDate]);
 
   const { data: overdueData } = useQuery({
     queryKey: ['tasks-overdue'],
@@ -32,6 +100,8 @@ const Tasks: React.FC = () => {
       message.success('Task created successfully');
       setModalVisible(false);
       form.resetFields();
+      // Save sort preference
+      saveSortPreference(sortByDueDate);
     },
   });
 
@@ -44,6 +114,8 @@ const Tasks: React.FC = () => {
       setModalVisible(false);
       form.resetFields();
       setEditingTask(null);
+      // Save sort preference
+      saveSortPreference(sortByDueDate);
     },
   });
 
@@ -53,6 +125,8 @@ const Tasks: React.FC = () => {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       queryClient.invalidateQueries({ queryKey: ['tasks-overdue'] });
       message.success('Task deleted successfully');
+      // Save sort preference
+      saveSortPreference(sortByDueDate);
     },
   });
 
@@ -176,7 +250,13 @@ const Tasks: React.FC = () => {
     },
   ];
 
-  const overdueCount = overdueData?.data?.data?.length || 0;
+  // Filter sorted tasks for overdue (for display) - must be declared before overdueCount
+  const overdueTasks = React.useMemo(() => {
+    const now = new Date();
+    return sortedTasks.filter((t: any) => t.due_date && new Date(t.due_date) < now && t.status !== 'completed');
+  }, [sortedTasks]);
+
+  const overdueCount = overdueTasks.length;
 
   return (
     <div className="page-container">
@@ -206,7 +286,7 @@ const Tasks: React.FC = () => {
       <Card className="hover-card">
         <Table
           columns={columns}
-          dataSource={data?.data.data}
+          dataSource={sortedTasks}
           rowKey="id"
           loading={isLoading}
           pagination={{

@@ -33,7 +33,8 @@ workflowsRoutes.get('/', async (c) => {
     }
     stmt = stmt.bind(pagination.per_page);
     stmt = stmt.bind(offset);
-    const results = await stmt.all();
+    const result = await stmt.all();
+    const results = result.results || [];
     const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
     return c.json({
         data: results || [],
@@ -247,7 +248,7 @@ workflowsRoutes.get('/:id/executions', async (c) => {
     stmt = stmt.bind(id);
     const executions = await stmt.all();
     return c.json({
-        data: executions.results || [],
+        data: executions || [],
     });
 });
 // Import workflow (from n8n export)

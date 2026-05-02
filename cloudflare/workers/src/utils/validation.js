@@ -65,8 +65,11 @@ export const updateLeadSchema = createLeadSchema.partial();
 export const createDealSchema = z.object({
     contact_id: z.string().uuid().optional(),
     organization_id: z.string().uuid().optional(),
+    provider_id: z.string().uuid().optional(),
     name: z.string().min(1).max(255),
-    stage: z.string(),
+    stage: z.string().optional(),
+    pipeline_stage: z.string().optional(),
+    onboarding_stage: z.string().optional(),
     amount: z.number().optional(),
     probability: z.number().min(0).max(100).optional(),
     expected_close_date: z.string().optional(),
@@ -124,6 +127,20 @@ export const createProviderSchema = z.object({
     medicaid_enrollment_status: z.string().optional(),
 });
 export const updateProviderSchema = createProviderSchema.partial();
+// Payer Enrollment Schemas
+export const createPayerEnrollmentSchema = z.object({
+    npi_provider_id: z.string().uuid(),
+    payer_name: z.string().min(1),
+    payer_id: z.string().optional(),
+    enrollment_status: z.string().optional(),
+    application_date: z.string().optional(),
+    approval_date: z.string().optional(),
+    effective_date: z.string().optional(),
+    contract_signed: z.number().optional(),
+    test_transactions_status: z.string().optional(),
+    production_status: z.string().optional(),
+});
+export const updatePayerEnrollmentSchema = createPayerEnrollmentSchema.partial();
 // Task Schemas
 export const createTaskSchema = z.object({
     title: z.string().min(1).max(255),
@@ -168,6 +185,17 @@ export const gmailRelayConfigSchema = z.object({
     from_name: z.string().optional(),
     use_relay: z.boolean().optional(),
 });
+// Gmail OAuth Config Schema
+export const gmailOAuthConfigSchema = z.object({
+    auth_url: z.string().optional(),
+    token_url: z.string().optional(),
+    client_id: z.string().min(1),
+    client_secret: z.string().min(1),
+    redirect_uri: z.string().url().optional(),
+    from_email: z.string().email().optional(),
+    from_name: z.string().optional(),
+    use_oauth: z.boolean().optional(),
+});
 // Twilio Config Schema
 export const twilioConfigSchema = z.object({
     account_sid: z.string().min(1),
@@ -202,4 +230,6 @@ export const paginationSchema = z.object({
     status: z.string().optional(),
     priority: z.string().optional(),
     stage: z.string().optional(),
+    pipeline_stage: z.string().optional(),
+    onboarding_stage: z.string().optional(),
 });

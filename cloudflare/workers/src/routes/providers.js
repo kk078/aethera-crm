@@ -5,81 +5,91 @@ import { generateId, calculatePagination } from '../utils/helpers';
 export const providersRoutes = new Hono();
 // List providers (public endpoint for directory)
 providersRoutes.get('/', async (c) => {
-    const query = c.req.query();
-    // Public access - no authentication required
-    const pagination = paginationSchema.parse({
-        page: parseInt(query.page || '1'),
-        per_page: parseInt(query.per_page || '20'),
-        sort: query.sort || 'last_name',
-        order: query.order || 'asc',
-        search: query.search,
-    });
-    let whereClause = 'WHERE 1=1';
-    const bindings = [];
-    // Filter by specialty
-    if (query.specialty) {
-        whereClause += ' AND specialty_primary = ?';
-        bindings.push(query.specialty);
+    try {
+        const query = c.req.query();
+        console.log('Provider route called with query:', query);
+        const page = parseInt(query.page || '1');
+        const perPage = parseInt(query.per_page || '20');
+        const pagination = paginationSchema.parse({
+            page: isNaN(page) ? 1 : page,
+            per_page: isNaN(perPage) ? 20 : perPage,
+            sort: query.sort || 'last_name',
+            order: query.order || 'desc',
+            search: query.search,
+        });
+        console.log('Pagination:', pagination);
+        const db = c.env.DB;
+        // Get base query results first, then filter in memory
+        const offset = (pagination.page - 1) * pagination.per_page;
+        const sortCol = pagination.sort || 'last_name';
+        const sortOrder = pagination.order || 'desc';
+        // First get total count
+        console.log('Testing query...');
+        let countStmt = db.prepare('SELECT COUNT(*) as total FROM npi_providers');
+        const countResult = await countStmt.first();
+        const total = countResult?.total || 0;
+        console.log('Count result:', countResult);
+        // Get paginated results - use D1's native limit/offset without bind params
+        let listStmt = db.prepare(`SELECT id, npi, first_name, last_name, organization_name,
+    specialty_primary, phone, email, city, state
+    FROM npi_providers
+    ORDER BY ${sortCol} ${sortOrder}`);
+        const resultsRaw = await listStmt.all();
+        const dataArray = Array.isArray(resultsRaw) ? resultsRaw : resultsRaw.results || [];
+        console.log('Results count:', dataArray.length);
+        // Filter by email/phone filter (must have email or phone, not null and not empty)
+        let filteredData = dataArray.filter((p) => ((p.email !== null && p.email !== '') || (p.phone !== null && p.phone !== '')));
+        console.log('After email/phone filter count:', filteredData.length);
+        // Filter by query params in memory
+        if (query.specialty) {
+            filteredData = filteredData.filter((p) => p.specialty_primary === query.specialty);
+        }
+        if (query.state) {
+            filteredData = filteredData.filter((p) => p.state === query.state);
+        }
+        if (query.city) {
+            filteredData = filteredData.filter((p) => p.city === query.city);
+        }
+        if (query.insurance) {
+            filteredData = filteredData.filter((p) => p.insurance_panels && p.insurance_panels.includes(query.insurance));
+        }
+        if (pagination.search) {
+            const searchLower = pagination.search.toLowerCase();
+            filteredData = filteredData.filter((p) => p.first_name?.toLowerCase().includes(searchLower) ||
+                p.last_name?.toLowerCase().includes(searchLower) ||
+                p.organization_name?.toLowerCase().includes(searchLower) ||
+                p.specialty_primary?.toLowerCase().includes(searchLower));
+        }
+        console.log('Filtered count:', filteredData.length);
+        // Calculate pagination for the filtered data
+        const filteredTotal = filteredData.length;
+        const filteredOffset = (pagination.page - 1) * pagination.per_page;
+        const paginatedResults = filteredData.slice(filteredOffset, filteredOffset + pagination.per_page);
+        console.log('Paginated results count:', paginatedResults.length);
+        const paginationInfo = calculatePagination(pagination.page, pagination.per_page, filteredTotal);
+        return c.json({
+            data: paginatedResults,
+            pagination: {
+                page: paginationInfo.page,
+                per_page: paginationInfo.perPage,
+                total: paginationInfo.total,
+                total_pages: paginationInfo.totalPages,
+                has_more: paginationInfo.hasMore,
+            },
+        });
     }
-    // Filter by state
-    if (query.state) {
-        whereClause += ' AND state = ?';
-        bindings.push(query.state);
+    catch (error) {
+        console.error('Provider list error:', error);
+        return c.json({
+            error: error.message || 'Unknown error',
+            stack: error.stack || undefined
+        }, 500);
     }
-    // Filter by city
-    if (query.city) {
-        whereClause += ' AND city = ?';
-        bindings.push(query.city);
-    }
-    // Filter by insurance
-    if (query.insurance) {
-        whereClause += ' AND insurance_panels LIKE ?';
-        bindings.push(`%${query.insurance}%`);
-    }
-    // Search filter
-    if (pagination.search) {
-        whereClause += ' AND (first_name LIKE ? OR last_name LIKE ? OR organization_name LIKE ? OR specialty_primary LIKE ?)';
-        bindings.push(`%${pagination.search}%`, `%${pagination.search}%`, `%${pagination.search}%`, `%${pagination.search}%`);
-    }
-    // For public directory, only show verified providers with email
-    whereClause += " AND email IS NOT NULL AND email != ''";
-    const db = c.env.DB;
-    let stmt = db.prepare(`SELECT COUNT(*) as total FROM npi_providers ${whereClause}`);
-    for (const b of bindings) {
-        stmt = stmt.bind(b);
-    }
-    const countResult = await stmt.first();
-    const total = countResult?.total || 0;
-    const offset = (pagination.page - 1) * pagination.per_page;
-    stmt = db.prepare(`SELECT id, npi, provider_type, first_name, last_name, organization_name,
-              specialty_primary, specialty_secondary, address, city, state, zip,
-              phone, email, hospital_affiliations, medicare_enrollment_status,
-              medicaid_enrollment_status, board_certifications
-       FROM npi_providers ${whereClause}
-       ORDER BY ${pagination.sort} ${pagination.order}
-       LIMIT ? OFFSET ?`);
-    for (const b of bindings) {
-        stmt = stmt.bind(b);
-    }
-    stmt = stmt.bind(pagination.per_page);
-    stmt = stmt.bind(offset);
-    const results = await stmt.all();
-    const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
-    return c.json({
-        data: results || [],
-        pagination: {
-            page: paginationInfo.page,
-            per_page: paginationInfo.perPage,
-            total: paginationInfo.total,
-            total_pages: paginationInfo.totalPages,
-            has_more: paginationInfo.hasMore,
-        },
-    });
 });
 // Get single provider (public)
 providersRoutes.get('/:npi', async (c) => {
     const { npi } = c.req.param();
-    const isPublic = true; // This route is always public (mounted at /public/providers)
+    const isPublic = true;
     const db = c.env.DB;
     let stmt = db.prepare(`
     SELECT id, npi, provider_type, first_name, last_name, organization_name,
@@ -95,7 +105,6 @@ providersRoutes.get('/:npi', async (c) => {
     if (!provider) {
         throw new HTTPException(404, { message: 'Provider not found' });
     }
-    // For public view, hide sensitive data
     if (isPublic) {
         return c.json({
             data: {
@@ -127,12 +136,9 @@ providersRoutes.get('/id/:id', async (c) => {
 });
 // Search NPPES API (public endpoint)
 providersRoutes.post('/search/nppes', async (c) => {
-    // Optional: Check if user is authenticated for rate limiting
     const user = c.get('user');
-    // Allow public access but could implement rate limiting for non-authenticated users
     const body = await c.req.json();
     const { npi, first_name, last_name, organization_name, specialty, state, zipcode } = body;
-    // Build NPPES API query
     const params = new URLSearchParams();
     if (npi)
         params.append('number', npi);
@@ -183,14 +189,12 @@ providersRoutes.post('/import', async (c) => {
         throw new HTTPException(400, { message: 'NPI number required' });
     }
     const db = c.env.DB;
-    // Check if provider already exists
     let stmt = db.prepare('SELECT id FROM npi_providers WHERE npi = ?');
     stmt = stmt.bind(npi_data.number);
     const existing = await stmt.first();
     if (existing) {
         throw new HTTPException(400, { message: 'Provider with this NPI already exists' });
     }
-    // If only number provided, fetch full data from NPPES API
     let finalData = npi_data;
     if (!npi_data.basic) {
         const nppesUrl = `https://npiregistry.cms.hhs.gov/api/?version=2.1&number=${npi_data.number}`;
@@ -212,9 +216,6 @@ providersRoutes.post('/import', async (c) => {
     const practiceAddress = addresses.find((a) => a.address_purpose === 'LOCATION') || addresses[0] || {};
     const primaryTaxonomy = taxonomies.find((t) => t.primary) || taxonomies[0] || {};
     const providerType = (finalData.enumeration_type === 'NPI-1') ? 'individual' : 'organization';
-    const name = providerType === 'individual'
-        ? `${basic.first_name || ''} ${basic.last_name || ''}`.trim()
-        : basic.organization_name || '';
     stmt = db.prepare(`
     INSERT INTO npi_providers (id, npi, provider_type, first_name, last_name, organization_name,
                               address, city, state, zip, phone, fax, specialty_primary, taxonomy_codes,
@@ -324,7 +325,6 @@ providersRoutes.post('/:npi/claim', async (c) => {
         throw new HTTPException(400, { message: 'Name and email required' });
     }
     const db = c.env.DB;
-    // Check if provider exists
     let stmt = db.prepare('SELECT id FROM npi_providers WHERE npi = ?');
     stmt = stmt.bind(npi);
     const provider = await stmt.first();
@@ -344,7 +344,6 @@ providersRoutes.post('/:npi/claim', async (c) => {
     stmt = stmt.bind(claimant_phone || null);
     stmt = stmt.bind(verificationCode);
     await stmt.run();
-    // TODO: Send verification email
     return c.json({
         message: 'Claim request submitted. Please check your email for verification.',
         data: {
@@ -422,8 +421,8 @@ providersRoutes.get('/stats/summary', async (c) => {
     return c.json({
         data: {
             summary: stats,
-            by_specialty: bySpecialty.results || [],
-            by_state: byState.results || [],
+            by_specialty: bySpecialty || [],
+            by_state: byState || [],
         },
     });
 });

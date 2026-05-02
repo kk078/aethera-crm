@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Modal, Descriptions, Tag, Spin, Alert, Button } from 'antd';
+import { Modal, Descriptions, Tag, Spin, Alert, Button, Collapse, Card, List, Typography, Badge, Tabs, Select, Space, message } from 'antd';
 import { useAuthStore } from '@stores/authStore';
+import { onboardingAPI } from '@services/api';
+import TechnicalSetupTab from './TechnicalSetupTab';
+
+const { Paragraph } = Typography;
+const { Panel } = Collapse;
+const { TabPane } = Tabs;
 
 interface Provider {
   id: string;
@@ -26,6 +32,14 @@ interface Provider {
   medical_school: string | null;
   disciplinary_actions: string | null;
   website: string | null;
+  // Technical RCM fields
+  edi_submitter_id: string | null;
+  clearinghouse_partner: string | null;
+  era_enrollment_status: string | null;
+  workflow_stage: string | null;
+  billing_integration_status: string | null;
+  tax_id_linked: number | null;
+  clearinghouse_id: string | null;
 }
 
 interface ProviderDetailProps {
@@ -38,6 +52,8 @@ const ProviderDetail: React.FC<ProviderDetailProps> = ({ npi, visible, onClose }
   const [provider, setProvider] = useState<Provider | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [providerId, setProviderId] = useState<string | null>(null);
+  const [technicalSetupVersion, setTechnicalSetupVersion] = useState(0);
 
   const token = useAuthStore((state) => state.token);
 
@@ -72,6 +88,10 @@ const ProviderDetail: React.FC<ProviderDetailProps> = ({ npi, visible, onClose }
 
       if (result.data) {
         setProvider(result.data);
+        // Extract provider ID from the response
+        if (result.data.id) {
+          setProviderId(result.data.id);
+        }
       } else {
         setError('Provider not found');
       }
@@ -213,6 +233,55 @@ const ProviderDetail: React.FC<ProviderDetailProps> = ({ npi, visible, onClose }
           </Descriptions.Item>
         </Descriptions>
       )}
+
+      {/* Technical Onboarding Section */}
+      {provider && !loading && (
+        <Card title="Technical Onboarding" size="small" style={{ marginTop: '24px' }}>
+          <Descriptions column={1} size="small">
+            <Descriptions.Item label="EDI Submitter ID">
+              {provider.edi_submitter_id || 'Not configured'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Clearinghouse Partner">
+              {provider.clearinghouse_partner || 'Not configured'}
+            </Descriptions.Item>
+            <Descriptions.Item label="ERA Enrollment Status">
+              <Tag color={provider.era_enrollment_status === 'active' ? 'green' : 'default'}>
+                {provider.era_enrollment_status || 'Not started'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Workflow Stage">
+              <Tag color={provider.workflow_stage === 'active' ? 'green' : 'blue'}>
+                {provider.workflow_stage || 'outreach'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Billing Integration Status">
+              <Tag color={provider.billing_integration_status === 'complete' ? 'green' : 'orange'}>
+                {provider.billing_integration_status || 'not_started'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Tax ID Linked">
+              <Tag color={provider.tax_id_linked === 1 ? 'green' : 'default'}>
+                {provider.tax_id_linked === 1 ? 'Yes' : 'No'}
+              </Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="Clearinghouse ID">
+              {provider.clearinghouse_id || 'Not configured'}
+            </Descriptions.Item>
+          </Descriptions>
+        </Card>
+      )}
+
+      {/* Technical Setup Tab - full component for editing */}
+      {providerId && provider && !loading && (
+        <TechnicalSetupTab
+          providerId={providerId}
+          providerNpi={provider.npi}
+          providerName={provider.organization_name || `${provider.first_name || ''} ${provider.last_name || ''}`.trim() || `Provider ${provider.npi}`}
+          specialty={provider.specialty_primary}
+          refetchProviderData={() => setTechnicalSetupVersion(v => v + 1)}
+        />
+      )}
+
     </Modal>
   );
 };

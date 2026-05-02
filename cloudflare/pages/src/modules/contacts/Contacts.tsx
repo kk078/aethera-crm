@@ -81,22 +81,25 @@ const Contacts: React.FC = () => {
       title: 'Name',
       dataIndex: 'first_name',
       key: 'name',
-      render: (_: any, record: any) => `${record.first_name} ${record.last_name}`,
+      render: (_: any, record: any) => `${record?.first_name || ''} ${record?.last_name || ''}`.trim(),
     },
     {
       title: 'Email',
       dataIndex: 'email',
       key: 'email',
+      render: (email: string) => email || '-',
     },
     {
       title: 'Phone',
       dataIndex: 'phone',
       key: 'phone',
+      render: (phone: string) => phone || '-',
     },
     {
       title: 'Organization',
       dataIndex: 'organization_name',
       key: 'organization_name',
+      render: (org: string) => org || '-',
     },
     {
       title: 'Actions',
@@ -134,13 +137,13 @@ const Contacts: React.FC = () => {
       <Card className="hover-card">
         <Table
           columns={columns}
-          dataSource={data?.data.data}
+          dataSource={data?.data?.data || []}
           rowKey="id"
           loading={isLoading}
           pagination={{
-            pageSize: data?.data.pagination?.per_page || 20,
-            current: data?.data.pagination?.page || 1,
-            total: data?.data.pagination?.total || 0,
+            pageSize: data?.data?.pagination?.per_page || 20,
+            current: data?.data?.pagination?.page || 1,
+            total: data?.data?.pagination?.total || 0,
           }}
         />
       </Card>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Card, Typography, Table, Button, Space, Tag, Modal, Input, Form, message, Spin, Empty, Alert, Divider, Tooltip, Badge, Row, Col, Tabs, Select, Collapse, Descriptions, Progress } from 'antd';
-import { PhoneOutlined, MessageOutlined, RobotOutlined, ReloadOutlined, ThunderboltOutlined, SoundOutlined, FileTextOutlined, CloseOutlined, DeleteOutlined, BulbOutlined, BookOutlined, FundOutlined, SafetyOutlined, MedicineBoxOutlined, AuditOutlined, DollarOutlined, CopyOutlined, CheckCircleOutlined, FieldTimeOutlined, WarningOutlined, InfoCircleOutlined, AudioOutlined, AudioMutedOutlined } from '@ant-design/icons';
-import { twilioAPI, aiAPI } from '@services/api';
+import { PhoneOutlined, MessageOutlined, RobotOutlined, ReloadOutlined, ThunderboltOutlined, SoundOutlined, FileTextOutlined, CloseOutlined, DeleteOutlined, BulbOutlined, BookOutlined, FundOutlined, SafetyOutlined, MedicineBoxOutlined, AuditOutlined, DollarOutlined, CopyOutlined, CheckCircleOutlined, FieldTimeOutlined, WarningOutlined, InfoCircleOutlined, AudioOutlined, AudioMutedOutlined, PlusCircleOutlined } from '@ant-design/icons';
+import { twilioAPI, aiAPI, onboardingAPI, dealsAPI } from '@services/api';
 import { Device } from '@twilio/voice-sdk';
 
 // Silence non-actionable Twilio SDK console noise
@@ -88,6 +88,7 @@ const Calls: React.FC = () => {
   const [micActive, setMicActive] = useState(false);
   const deviceRef = useRef<any>(null);
   const activeCallRef = useRef<any>(null);
+  const [providerInfo, setProviderInfo] = useState<{ name: string; specialty: string } | null>(null);
 
   // ───── Call Flow Assistant State ─────
   const [flowResponse, setFlowResponse] = useState<any>(null);
@@ -101,8 +102,15 @@ const Calls: React.FC = () => {
 
   const loadCalls = useCallback(async () => {
     setLoading(true);
-    try { const res = await twilioAPI.getCallLogs(); setCalls(Array.isArray(res.data) ? res.data : []); } catch { setCalls([]); }
-    finally { setLoading(false); }
+    try {
+      const res = await twilioAPI.getCallLogs();
+      setCalls(res?.data && Array.isArray(res.data) ? res.data : []);
+    } catch (e) {
+      console.error('Error loading calls:', e);
+      setCalls([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => { loadCalls(); }, []);
@@ -114,8 +122,8 @@ const Calls: React.FC = () => {
     const initDevice = async () => {
       try {
         const tokenRes = await twilioAPI.getToken();
-        const token = tokenRes.data.data.token;
-        if (cancelled) return;
+        const token = tokenRes?.data?.data?.token;
+        if (cancelled || !token) return;
         const device = new Device(token, { logLevel: 0 });
         deviceRef.current = device;
 
@@ -123,7 +131,9 @@ const Calls: React.FC = () => {
         device.on('error', () => {});
 
         await device.register();
-      } catch {}
+      } catch (e) {
+        console.error('Twilio init error:', e);
+      }
     };
     initDevice();
     return () => {
@@ -175,7 +185,11 @@ const Calls: React.FC = () => {
       try {
         const spec = preview?.provider?.specialty || 'General Practice';
         const res = await aiAPI.getOutreachFlow({ query: transcript, current_phase: currentPhase, conversation_log: conversationLog, specialty: spec });
-        setFlowResponse(res.data); setCurrentPhase(res.data.phase); setAlternativeIndex(0);
+        if (res?.data) {
+          setFlowResponse(res.data);
+          setCurrentPhase(res.data?.phase || 'hook');
+          setAlternativeIndex(0);
+        }
       } catch {}
     }, 800);
     return () => clearTimeout(t);
@@ -196,8 +210,18 @@ const Calls: React.FC = () => {
   // Load preview
   useEffect(() => {
     const digits = (countryCode + localNumber).replace(/\D/g, '');
-    if (digits.length >= 10) { setPreviewLoading(true); aiAPI.callPreview(digits).then(res => setPreview(res.data)).catch(() => setPreview(null)).finally(() => setPreviewLoading(false)); }
-    else { setPreview(null); }
+    if (digits.length >= 10) {
+      setPreviewLoading(true);
+      aiAPI.callPreview(digits)
+        .then(res => setPreview(res?.data || null))
+        .catch((e: any) => {
+          console.error('Preview load error:', e);
+          setPreview(null);
+        })
+        .finally(() => setPreviewLoading(false));
+    } else {
+      setPreview(null);
+    }
   }, [countryCode, localNumber]);
 
   const handleMakeCall = async () => {
@@ -246,9 +270,56 @@ const Calls: React.FC = () => {
 
   const handleSaveOutcome = async (values: any) => {
     try {
-      if (callActiveSid) await twilioAPI.setOutcome(callActiveSid, { outcome: values.outcome, notes: values.notes || '' });
-      message.success('Outcome saved'); setOutcomeModalVisible(false); loadCalls();
-    } catch (e: any) { message.error(`Save failed: ${e.message}`); }
+      if (callActiveSid) {
+        const outcomeRes = await twilioAPI.setOutcome(callActiveSid, { outcome: values.outcome, notes: values.notes || '' });
+        if (outcomeRes?.data) {
+          message.success('Outcome saved');
+          setOutcomeModalVisible(false);
+          loadCalls();
+        }
+      }
+    } catch (e: any) {
+      message.error(`Save failed: ${e.message || 'Unknown error'}`);
+    }
+  };
+
+  const handleConvertToOnboarding = async () => {
+    if (!callActiveSid) {
+      message.warning('No active call to convert');
+      return;
+    }
+    // Get current values from the form
+    const values = outcomeForm.getFieldsValue();
+    try {
+      // Find the call record first
+      const callsRes = await twilioAPI.getCallLogs();
+      const call = Array.isArray(callsRes?.data) ? callsRes.data.find((c: any) => c.twilio_call_sid === callActiveSid) : null;
+
+      if (call) {
+        // Create a new deal linked to this call
+        const dealData = {
+          name: `Follow-up for ${call.from_number || 'Unknown'}`,
+          pipeline_stage: 'qualified',
+          onboarding_stage: 'initial',
+          outcome: values.outcome,
+        };
+
+        const dealRes = await dealsAPI.create(dealData);
+        if (dealRes?.data?.data?.id) {
+          message.success(`Deal created: ${dealRes.data.data.name}`);
+          // Link phone_call_id to deal
+          await twilioAPI.setOutcome(callActiveSid, {
+            outcome: values.outcome,
+            notes: values.notes || '',
+            deal_id: dealRes.data.data.id,
+          });
+        }
+      } else {
+        message.warning('Could not find call record for this SID');
+      }
+    } catch (e: any) {
+      message.error(`Failed to convert to onboarding: ${e.message || 'Unknown error'}`);
+    }
   };
 
   const handleDialPad = (digit: string) => {
@@ -270,7 +341,12 @@ const Calls: React.FC = () => {
 
   const handleCallAssist = async (call: CallRecord) => {
     setSelectedCall(call); setAssistLoading(true); setCallAssistResult(null);
-    try { const res = await aiAPI.callAssist(call.id, call.transcription || undefined); setCallAssistResult(res.data); } catch (e: any) { message.error(`Assist failed: ${e.message}`); }
+    try {
+      const res = await aiAPI.callAssist(call.id, call.transcription || undefined);
+      if (res?.data) setCallAssistResult(res.data);
+    } catch (e: any) {
+      message.error(`Assist failed: ${e.message || 'Unknown error'}`);
+    }
     setAssistLoading(false);
   };
 
@@ -279,9 +355,13 @@ const Calls: React.FC = () => {
     setAiSearching(true); setAiResponse(null);
     try {
       const res = await aiAPI.callAssist('ai-query', q);
-      if (res.data?.assistance?.objections?.length > 0) setAiResponse(res.data.assistance.objections.map((o: any) => `Q: ${o.objection}\nA: ${o.response}`).join('\n\n'));
-      else if (res.data?.assistance?.suggestions?.length > 0) setAiResponse(res.data.assistance.suggestions.join('\n'));
-      else setAiResponse(`Query received: "${q}". Use the billing topics for specific answers.`);
+      if (res?.data?.assistance?.objections?.length > 0) {
+        setAiResponse(res.data.assistance.objections.map((o: any) => `Q: ${o.objection || ''}\nA: ${o.response || ''}`).join('\n\n'));
+      } else if (res?.data?.assistance?.suggestions?.length > 0) {
+        setAiResponse(res.data.assistance.suggestions.join('\n'));
+      } else {
+        setAiResponse(`Query received: "${q}". Use the billing topics for specific answers.`);
+      }
     } catch { setAiResponse(`Unable to process query.`); }
     setAiSearching(false);
   };
@@ -519,7 +599,12 @@ const Calls: React.FC = () => {
             </Select>
           </Form.Item>
           <Form.Item name="notes" label="Notes"><TextArea rows={3} placeholder="Key takeaways..." /></Form.Item>
-          <Button type="primary" htmlType="submit" icon={<CheckCircleOutlined />}>Save Outcome</Button>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Button type="primary" htmlType="submit" icon={<CheckCircleOutlined />}>Save Outcome</Button>
+            <Button type="dashed" icon={<PlusCircleOutlined />} onClick={() => handleConvertToOnboarding()}>
+              Convert to Onboarding
+            </Button>
+          </Space>
         </Form>
       </Modal>
     </div>

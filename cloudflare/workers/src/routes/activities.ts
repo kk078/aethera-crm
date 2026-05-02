@@ -38,20 +38,13 @@ activitiesRoutes.get('/', async (c) => {
   }
 
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT COUNT(*) as total FROM activities ${whereClause}`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const countResult = await stmt.first();
+  const countBindings = [...bindings];
+  const countResult = await db.prepare(`SELECT COUNT(*) as total FROM activities ${whereClause}`).bind(...countBindings).first();
 
   const offset = (pagination.page - 1) * pagination.per_page;
-  stmt = db.prepare(`SELECT a.*, c.first_name, c.last_name, d.name as deal_name FROM activities a LEFT JOIN contacts c ON a.contact_id = c.id LEFT JOIN deals d ON a.deal_id = d.id ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`) as any;
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  stmt = stmt.bind(pagination.per_page);
-  stmt = stmt.bind(offset);
-  const results: any = await stmt.all();
+  const queryBindings = [...bindings, pagination.per_page, offset];
+  const result: any = await db.prepare(`SELECT a.*, c.first_name, c.last_name, d.name as deal_name FROM activities a LEFT JOIN contacts c ON a.contact_id = c.id LEFT JOIN deals d ON a.deal_id = d.id ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`).bind(...queryBindings).all();
+  const results = result.results || [];
 
   const paginationInfo = calculatePagination(pagination.page, pagination.per_page, countResult?.total || 0);
 
@@ -84,20 +77,9 @@ activitiesRoutes.post('/', async (c) => {
   const validated = createActivitySchema.parse(body);
   const id = generateId();
   const db = (c as any).env.DB as any;
-  let stmt = (db.prepare(`INSERT INTO activities (id, contact_id, deal_id, type, subject, description, status, due_date, direction, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`) as any);
-  stmt = stmt.bind(id);
-  stmt = stmt.bind(validated.contact_id || null);
-  stmt = stmt.bind(validated.deal_id || null);
-  stmt = stmt.bind(validated.type);
-  stmt = stmt.bind(validated.subject || null);
-  stmt = stmt.bind(validated.description || null);
-  stmt = stmt.bind(validated.status || 'pending');
-  stmt = stmt.bind(validated.due_date || null);
-  stmt = stmt.bind(validated.direction || 'internal');
-  stmt = stmt.bind(user?.id);
-  await stmt.run();
-  await ((db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`) as any).bind(user?.id, 'create', 'activities', id));
-  const activity = (db.prepare(`SELECT a.*, c.first_name, c.last_name, d.name as deal_name FROM activities a LEFT JOIN contacts c ON a.contact_id = c.id LEFT JOIN deals d ON a.deal_id = d.id WHERE a.id = ?`) as any).bind(id).first();
+  await db.prepare(`INSERT INTO activities (id, contact_id, deal_id, type, subject, description, status, due_date, direction, owner_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id, validated.contact_id || null, validated.deal_id || null, validated.type, validated.subject || null, validated.description || null, validated.status || 'pending', validated.due_date || null, validated.direction || 'internal', user?.id).run();
+  await db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`).bind(user?.id, 'create', 'activities', id).run();
+  const activity = await db.prepare(`SELECT a.*, c.first_name, c.last_name, d.name as deal_name FROM activities a LEFT JOIN contacts c ON a.contact_id = c.id LEFT JOIN deals d ON a.deal_id = d.id WHERE a.id = ?`).bind(id).first();
   return c.json({ message: 'Activity created successfully', data: activity }, 201);
 });
 
@@ -107,16 +89,16 @@ activitiesRoutes.put('/:id', async (c) => {
   const body = await c.req.json();
   const validated = updateActivitySchema.parse(body);
   const db = (c as any).env.DB as any;
-  const existing = (db.prepare('SELECT * FROM activities WHERE id = ?') as any).bind(id).first();
+  const existing = await (db.prepare('SELECT * FROM activities WHERE id = ?') as any).bind(id).first();
   if (!existing) {
     throw new HTTPException(404, { message: 'Activity not found' });
   }
   const updates: string[] = [];
-  const bindings: any[] = [];
+  const bindValues: any[] = [];
   for (const [key, value] of Object.entries(validated)) {
     if (value !== undefined) {
       updates.push(`${key} = ?`);
-      bindings.push(value);
+      bindValues.push(value);
     }
   }
   if (updates.length === 0) {
@@ -126,14 +108,10 @@ activitiesRoutes.put('/:id', async (c) => {
     updates.push('completed_at = CURRENT_TIMESTAMP');
   }
   updates.push('updated_at = CURRENT_TIMESTAMP');
-  bindings.push(id);
-  let stmt = (db.prepare(`UPDATE activities SET ${updates.join(', ')} WHERE id = ?`) as any);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  await stmt.run();
-  await ((db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`) as any).bind(user?.id, 'update', 'activities', id));
-  const activity = (db.prepare('SELECT * FROM activities WHERE id = ?') as any).bind(id).first();
+  bindValues.push(id);
+  await (db.prepare(`UPDATE activities SET ${updates.join(', ')} WHERE id = ?`) as any).bind(...bindValues).run();
+  await db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`).bind(user?.id, 'update', 'activities', id).run();
+  const activity = await db.prepare('SELECT * FROM activities WHERE id = ?').bind(id).first();
   return c.json({ message: 'Activity updated successfully', data: activity });
 });
 
@@ -141,12 +119,12 @@ activitiesRoutes.delete('/:id', async (c) => {
   const user = c.get('user');
   const { id } = c.req.param();
   const db = (c as any).env.DB as any;
-  const existing = (db.prepare('SELECT * FROM activities WHERE id = ?') as any).bind(id).first();
+  const existing = await (db.prepare('SELECT * FROM activities WHERE id = ?') as any).bind(id).first();
   if (!existing) {
     throw new HTTPException(404, { message: 'Activity not found' });
   }
-  await (db.prepare('DELETE FROM activities WHERE id = ?') as any).bind(id).run();
-  await ((db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`) as any).bind(user?.id, 'delete', 'activities', id));
+  await db.prepare('DELETE FROM activities WHERE id = ?').bind(id).run();
+  await db.prepare(`INSERT INTO audit_logs (user_id, action, table_name, record_id) VALUES (?, ?, ?, ?)`).bind(user?.id, 'delete', 'activities', id).run();
   return c.json({ message: 'Activity deleted successfully' });
 });
 

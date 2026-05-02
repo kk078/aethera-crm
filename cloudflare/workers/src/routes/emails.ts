@@ -54,15 +54,25 @@ const DEFAULT_EMAIL_TEMPLATES = [
   },
 ];
 
+// Helper function to get DB binding
+function getDB(c: any) {
+  const db = (c as any).env.DB;
+  if (!db) {
+    throw new HTTPException(500, { message: 'Database binding not available' });
+  }
+  return db;
+}
+
 export const emailsRoutes = new Hono<AppEnv>();
 
 // ───── Gmail Relay Configuration ─────
 
 // Get Gmail relay config (masks API key)
 emailsRoutes.get('/smtp/config', async (c) => {
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_relay_%'");
-  const settings: any = await stmt.all();
+  const result: any = await stmt.all();
+  const settings = result.results || [];
 
   const config: Record<string, string> = {};
   for (const row of settings || []) {
@@ -98,23 +108,17 @@ emailsRoutes.put('/smtp/config', async (c) => {
     gmail_relay_use_relay: validated.use_relay ? 'true' : 'false',
   };
 
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   for (const [key, value] of Object.entries(pairs)) {
-    let stmt: any = db.prepare("SELECT id FROM settings WHERE key = ?");
-    stmt = stmt.bind(key);
-    const existing = await stmt.first();
+    const existingStmt = db.prepare("SELECT id FROM settings WHERE key = ?");
+    const existing = await existingStmt.bind(key).first();
 
     if (existing) {
-      stmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-      stmt = stmt.bind(value);
-      stmt = stmt.bind(key);
-      await stmt.run();
+      const updateStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+      await updateStmt.bind(value, key).run();
     } else {
-      stmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_relay')") as any;
-      stmt = stmt.bind(generateId());
-      stmt = stmt.bind(key);
-      stmt = stmt.bind(value);
-      await stmt.run();
+      const insertStmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_relay')");
+      await insertStmt.bind(generateId(), key, value).run();
     }
   }
 
@@ -123,77 +127,57 @@ emailsRoutes.put('/smtp/config', async (c) => {
 
 // Setup default Gmail OAuth config and email templates
 emailsRoutes.post('/setup', async (c) => {
-  const db = (c as any).env.DB as any;
-  const query = c.req.query();
+  const dbClient = getDB(c);
 
-  // Check if already set up
-  let stmt: any = db.prepare("SELECT value FROM settings WHERE key = 'gmail_oauth_client_id'");
-  const existing = await stmt.first();
+  try {
+    // Save OAuth config
+    const oauthPairs: Record<string, string> = {
+      gmail_oauth_client_id: DEFAULT_OAUTH_CONFIG.client_id,
+      gmail_oauth_client_secret: DEFAULT_OAUTH_CONFIG.client_secret,
+      gmail_oauth_redirect_uri: DEFAULT_OAUTH_CONFIG.redirect_uri,
+      gmail_oauth_from_email: DEFAULT_OAUTH_CONFIG.from_email,
+      gmail_oauth_from_name: DEFAULT_OAUTH_CONFIG.from_name,
+      gmail_oauth_use_oauth: 'true',
+    };
 
-  if (existing && query.force !== 'true') {
+    for (const [key, value] of Object.entries(oauthPairs)) {
+      const existingStmt = dbClient.prepare("SELECT id FROM settings WHERE key = ?");
+      const existing = await existingStmt.bind(key).first();
+
+      if (existing) {
+        const updateStmt = dbClient.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+        await updateStmt.bind(value, key).run();
+      } else {
+        const insertStmt = dbClient.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')");
+        await insertStmt.bind(generateId(), key, value).run();
+      }
+    }
+
+    // Insert default email templates
+    for (const template of DEFAULT_EMAIL_TEMPLATES) {
+      const checkStmt = dbClient.prepare("SELECT id FROM email_templates WHERE name = ?");
+      const existing = await checkStmt.bind(template.name).first();
+
+      if (!existing) {
+        const insertStmt = dbClient.prepare(`
+          INSERT INTO email_templates (id, name, subject, body, category)
+          VALUES (?, ?, ?, ?, ?)
+        `);
+        await insertStmt.bind(generateId(), template.name, template.subject, template.body, template.category).run();
+      }
+    }
+
     return c.json({
-      message: 'Already configured',
-      data: { already_setup: true },
+      message: 'Setup completed successfully',
+      data: {
+        oauth_configured: true,
+        templates_count: DEFAULT_EMAIL_TEMPLATES.length,
+      },
     });
+  } catch (error: any) {
+    console.error('Setup endpoint error:', error);
+    throw new HTTPException(500, { message: `Setup failed: ${error.message}` });
   }
-
-  // Save OAuth config
-  const oauthPairs: Record<string, string> = {
-    gmail_oauth_client_id: DEFAULT_OAUTH_CONFIG.client_id,
-    gmail_oauth_client_secret: DEFAULT_OAUTH_CONFIG.client_secret,
-    gmail_oauth_redirect_uri: DEFAULT_OAUTH_CONFIG.redirect_uri,
-    gmail_oauth_from_email: DEFAULT_OAUTH_CONFIG.from_email,
-    gmail_oauth_from_name: DEFAULT_OAUTH_CONFIG.from_name,
-    gmail_oauth_use_oauth: 'true',
-  };
-
-  for (const [key, value] of Object.entries(oauthPairs)) {
-    stmt = db.prepare("SELECT id FROM settings WHERE key = ?");
-    stmt = stmt.bind(key);
-    const existing = await stmt.first();
-
-    if (existing) {
-      stmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-      stmt = stmt.bind(value);
-      stmt = stmt.bind(key);
-      await stmt.run();
-    } else {
-      stmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')") as any;
-      stmt = stmt.bind(generateId());
-      stmt = stmt.bind(key);
-      stmt = stmt.bind(value);
-      await stmt.run();
-    }
-  }
-
-  // Insert default email templates
-  for (const template of DEFAULT_EMAIL_TEMPLATES) {
-    let templateStmt: any = db.prepare("SELECT id FROM email_templates WHERE name = ?");
-    templateStmt = templateStmt.bind(template.name);
-    const existingTemplate = await templateStmt.first();
-
-    if (!existingTemplate) {
-      const templateId = generateId();
-      let insertStmt: any = db.prepare(`
-        INSERT INTO email_templates (id, name, subject, body, category, owner_id)
-        VALUES (?, ?, ?, ?, ?, 'system')
-      `);
-      insertStmt = insertStmt.bind(templateId);
-      insertStmt = insertStmt.bind(template.name);
-      insertStmt = insertStmt.bind(template.subject);
-      insertStmt = insertStmt.bind(template.body);
-      insertStmt = insertStmt.bind(template.category);
-      await insertStmt.run();
-    }
-  }
-
-  return c.json({
-    message: 'Setup completed successfully',
-    data: {
-      oauth_configured: true,
-      templates_count: DEFAULT_EMAIL_TEMPLATES.length,
-    },
-  });
 });
 
 // Test Gmail relay config
@@ -205,9 +189,10 @@ emailsRoutes.post('/smtp/test', async (c) => {
     throw new HTTPException(400, { message: 'Test recipient email required' });
   }
 
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_relay_%'");
-  const settings: any = await stmt.all();
+  const result: any = await stmt.all();
+  const settings = result.results || [];
   const config: Record<string, string> = {};
   for (const row of settings || []) {
     const r = row as any;
@@ -273,29 +258,35 @@ emailsRoutes.post('/smtp/test', async (c) => {
 
 // Get Gmail OAuth config
 emailsRoutes.get('/oauth/config', async (c) => {
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
-  const settings: any = await stmt.all();
+  const db = getDB(c);
+  try {
+    let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
+    const result: any = await stmt.all();
+    const settings = result.results || [];
 
-  const config: Record<string, string> = {};
-  for (const row of settings || []) {
-    const r = row as any;
-    if (r.key === 'gmail_oauth_client_secret') {
-      config.client_secret = r.value ? '••••••••' : '';
-    } else {
-      config[r.key.replace('gmail_oauth_', '')] = r.value || '';
+    const config: Record<string, string> = {};
+    for (const row of settings || []) {
+      const r = row as any;
+      if (r.key === 'gmail_oauth_client_secret') {
+        config.client_secret = r.value ? '••••••••' : '';
+      } else {
+        config[r.key.replace('gmail_oauth_', '')] = r.value || '';
+      }
     }
-  }
 
-  return c.json({
-    data: {
-      client_id: config.client_id || '',
-      redirect_uri: config.redirect_uri || '',
-      from_email: config.from_email || 'info@aetherahealthcare.com',
-      from_name: config.from_name || 'Aethera Healthcare',
-      use_oauth: config.use_oauth === 'true',
-    },
-  });
+    return c.json({
+      data: {
+        client_id: config.client_id || '',
+        redirect_uri: config.redirect_uri || '',
+        from_email: config.from_email || 'info@aetherahealthcare.com',
+        from_name: config.from_name || 'Aethera Healthcare',
+        use_oauth: config.use_oauth === 'true',
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching Gmail OAuth config:', error);
+    throw new HTTPException(500, { message: `Failed to fetch Gmail OAuth config: ${error.message}` });
+  }
 });
 
 // Save Gmail OAuth config
@@ -312,23 +303,17 @@ emailsRoutes.put('/oauth/config', async (c) => {
     gmail_oauth_use_oauth: validated.use_oauth ? 'true' : 'false',
   };
 
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   for (const [key, value] of Object.entries(pairs)) {
-    let stmt: any = db.prepare("SELECT id FROM settings WHERE key = ?");
-    stmt = stmt.bind(key);
-    const existing = await stmt.first();
+    const existingStmt = db.prepare("SELECT id FROM settings WHERE key = ?");
+    const existing = await existingStmt.bind(key).first();
 
     if (existing) {
-      stmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-      stmt = stmt.bind(value);
-      stmt = stmt.bind(key);
-      await stmt.run();
+      const updateStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+      await updateStmt.bind(value, key).run();
     } else {
-      stmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')") as any;
-      stmt = stmt.bind(generateId());
-      stmt = stmt.bind(key);
-      stmt = stmt.bind(value);
-      await stmt.run();
+      const insertStmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')");
+      await insertStmt.bind(generateId(), key, value).run();
     }
   }
 
@@ -337,9 +322,10 @@ emailsRoutes.put('/oauth/config', async (c) => {
 
 // Generate Gmail OAuth auth URL
 emailsRoutes.post('/oauth/auth-url', async (c) => {
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
-  const settings: any = await stmt.all();
+  const result: any = await stmt.all();
+  const settings = result.results || [];
   const config: Record<string, string> = {};
   for (const row of settings || []) {
     const r = row as any;
@@ -372,9 +358,10 @@ emailsRoutes.post('/oauth/token', async (c) => {
     throw new HTTPException(400, { message: 'Authorization code required' });
   }
 
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
-  const settings: any = await stmt.all();
+  const result: any = await stmt.all();
+  const settings = result.results || [];
   const config: Record<string, string> = {};
   for (const row of settings || []) {
     const r = row as any;
@@ -411,31 +398,37 @@ emailsRoutes.post('/oauth/token', async (c) => {
       throw new HTTPException(400, { message: `Token exchange failed: ${err}` });
     }
 
-    const tokenData = await tokenResponse.json();
+    interface TokenData {
+      access_token: string;
+      refresh_token?: string;
+      expires_in?: number;
+      token_type: string;
+    }
+
+    interface UserInfo {
+      email: string;
+      name: string;
+      id: string;
+    }
+
+    const tokenData: TokenData = await tokenResponse.json();
 
     // Store the tokens in settings
-    let storeStmt: any = db.prepare("SELECT id FROM settings WHERE key = ?");
     for (const [key, value] of Object.entries({
       gmail_oauth_access_token: tokenData.access_token,
       gmail_oauth_refresh_token: tokenData.refresh_token || '',
       gmail_oauth_token_expiry: tokenData.expires_in ? (Date.now() / 1000 + tokenData.expires_in).toString() : '',
       gmail_oauth_use_oauth: 'true',
     })) {
-      storeStmt = storeStmt.bind(key);
-      const existing = await storeStmt.first();
-      storeStmt = db.prepare("SELECT id FROM settings WHERE key = ?") as any;
+      const existingStmt = db.prepare("SELECT id FROM settings WHERE key = ?");
+      const existing = await existingStmt.bind(key).first();
 
       if (existing) {
-        storeStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-        storeStmt = storeStmt.bind(value);
-        storeStmt = storeStmt.bind(key);
-        await storeStmt.run();
+        const updateStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+        await updateStmt.bind(value, key).run();
       } else {
-        storeStmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')") as any;
-        storeStmt = storeStmt.bind(generateId());
-        storeStmt = storeStmt.bind(key);
-        storeStmt = storeStmt.bind(value);
-        await storeStmt.run();
+        const insertStmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'gmail_oauth')");
+        await insertStmt.bind(generateId(), key, value).run();
       }
     }
 
@@ -443,7 +436,7 @@ emailsRoutes.post('/oauth/token', async (c) => {
     const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${tokenData.access_token}` },
     });
-    const userInfo = await userInfoResponse.json();
+    const userInfo: UserInfo = await userInfoResponse.json();
 
     return c.json({
       message: 'Gmail OAuth configured successfully',
@@ -461,9 +454,10 @@ emailsRoutes.post('/oauth/token', async (c) => {
 
 // Refresh Gmail OAuth token
 emailsRoutes.post('/oauth/refresh', async (c) => {
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
-  const settings: any = await stmt.all();
+  const result: any = await stmt.all();
+  const settings = result.results || [];
   const config: Record<string, string> = {};
   for (const row of settings || []) {
     const r = row as any;
@@ -498,13 +492,16 @@ emailsRoutes.post('/oauth/refresh', async (c) => {
       throw new HTTPException(400, { message: `Token refresh failed: ${err}` });
     }
 
-    const tokenData = await tokenResponse.json();
+    interface RefreshTokenData {
+      access_token: string;
+      expires_in?: number;
+    }
+
+    const tokenData: RefreshTokenData = await tokenResponse.json();
 
     // Update access token in settings
-    let storeStmt: any = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-    storeStmt = storeStmt.bind(tokenData.access_token);
-    storeStmt = storeStmt.bind('gmail_oauth_access_token');
-    await storeStmt.run();
+    const updateStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+    await updateStmt.bind(tokenData.access_token, 'gmail_oauth_access_token').run();
 
     return c.json({
       message: 'Token refreshed successfully',
@@ -604,7 +601,8 @@ async function sendViaGmailOAuth(opts: {
 
 async function getGmailOAuthTokens(db: any) {
   let stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
-  const settings: any = await stmt.all();
+  const result: any = await stmt.all();
+  const settings = result.results || [];
   const config: Record<string, string> = {};
   for (const row of settings || []) {
     const r = row as any;
@@ -643,19 +641,19 @@ async function getGmailOAuthTokens(db: any) {
       });
 
       if (tokenResponse.ok) {
-        const tokenData = await tokenResponse.json();
+        interface RefreshTokenData {
+          access_token: string;
+          expires_in?: number;
+        }
+        const tokenData: RefreshTokenData = await tokenResponse.json();
         // Update access token in settings
-        let updateStmt: any = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-        updateStmt = updateStmt.bind(tokenData.access_token);
-        updateStmt = updateStmt.bind('gmail_oauth_access_token');
-        await updateStmt.run();
+        const updateStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+        await updateStmt.bind(tokenData.access_token, 'gmail_oauth_access_token').run();
 
         // Update expiry
         if (tokenData.expires_in) {
-          let expiryStmt: any = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-          expiryStmt = expiryStmt.bind((now + tokenData.expires_in).toString());
-          expiryStmt = expiryStmt.bind('gmail_oauth_token_expiry');
-          await expiryStmt.run();
+          const expiryStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+          await expiryStmt.bind((now + tokenData.expires_in).toString(), 'gmail_oauth_token_expiry').run();
         }
 
         return tokenData.access_token;
@@ -699,46 +697,55 @@ emailsRoutes.get('/', async (c) => {
     bindings.push(query.direction);
   }
 
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT COUNT(*) as total FROM emails ${whereClause}`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
+  const db = getDB(c);
+  try {
+    const offset = (pagination.page - 1) * pagination.per_page;
+    const limit = pagination.per_page;
+
+    // Count query
+    let countStmt: any = db.prepare(`SELECT COUNT(*) as total FROM emails ${whereClause}`);
+    for (const b of bindings) {
+      countStmt = countStmt.bind(b);
+    }
+    const countResult = await countStmt.first();
+    const total = countResult?.total || 0;
+
+    // Data query with full WHERE, ORDER BY, LIMIT, OFFSET
+    let dataStmt: any = db.prepare(`SELECT * FROM emails ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ${limit} OFFSET ${offset}`);
+    for (const b of bindings) {
+      dataStmt = dataStmt.bind(b);
+    }
+    const result: any = await dataStmt.all();
+    const results = result.results || [];
+
+    const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
+
+    return c.json({
+      data: results || [],
+      pagination: {
+        page: paginationInfo.page,
+        per_page: paginationInfo.perPage,
+        total: paginationInfo.total,
+        total_pages: paginationInfo.totalPages,
+        has_more: paginationInfo.hasMore,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching emails:', error);
+    throw new HTTPException(500, { message: `Failed to fetch emails: ${error.message}` });
   }
-  const countResult = await stmt.first();
-  const total = countResult?.total || 0;
-
-  const offset = (pagination.page - 1) * pagination.per_page;
-  stmt = db.prepare(`SELECT * FROM emails ${whereClause} ORDER BY ${pagination.sort} ${pagination.order} LIMIT ? OFFSET ?`) as any;
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  stmt = stmt.bind(pagination.per_page);
-  stmt = stmt.bind(offset);
-  const results: any = await stmt.all();
-
-  const paginationInfo = calculatePagination(pagination.page, pagination.per_page, total);
-
-  return c.json({
-    data: results || [],
-    pagination: {
-      page: paginationInfo.page,
-      per_page: paginationInfo.perPage,
-      total: paginationInfo.total,
-      total_pages: paginationInfo.totalPages,
-      has_more: paginationInfo.hasMore,
-    },
-  });
 });
 
 // ───── Email Templates CRUD ─────
 
 emailsRoutes.get('/templates', async (c) => {
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`
+  const db = getDB(c);
+  const stmt = db.prepare(`
     SELECT * FROM email_templates
     ORDER BY category, name
   `);
-  const templates: any = await stmt.all();
+  const result: any = await stmt.all();
+  const templates = result.results || [];
   return c.json({
     data: templates || [],
   });
@@ -750,22 +757,15 @@ emailsRoutes.post('/templates', async (c) => {
   const validated = emailTemplateSchema.parse(body);
 
   const id = generateId();
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`
+  const db = getDB(c);
+  const insertStmt = db.prepare(`
     INSERT INTO email_templates (id, name, subject, body, category, owner_id)
     VALUES (?, ?, ?, ?, ?, ?)
   `);
-  stmt = stmt.bind(id);
-  stmt = stmt.bind(validated.name);
-  stmt = stmt.bind(validated.subject || null);
-  stmt = stmt.bind(validated.body);
-  stmt = stmt.bind(validated.category || null);
-  stmt = stmt.bind(user?.id);
-  await stmt.run();
+  await insertStmt.bind(id, validated.name, validated.subject || null, validated.body, validated.category || null, user?.id).run();
 
-  stmt = db.prepare('SELECT * FROM email_templates WHERE id = ?') as any;
-  stmt = stmt.bind(id);
-  const template = await stmt.first();
+  const resultStmt = db.prepare('SELECT * FROM email_templates WHERE id = ?');
+  const template = await resultStmt.bind(id).first();
 
   return c.json(
     {
@@ -781,29 +781,22 @@ emailsRoutes.put('/templates/:id', async (c) => {
   const body = await c.req.json();
   const validated = emailTemplateSchema.parse(body);
 
-  const db = (c as any).env.DB as any;
-  let existingStmt: any = db.prepare('SELECT * FROM email_templates WHERE id = ?');
-  existingStmt = existingStmt.bind(id);
-  const existing = await existingStmt.first();
+  const db = getDB(c);
+  const existingStmt = db.prepare('SELECT * FROM email_templates WHERE id = ?');
+  const existing = await existingStmt.bind(id).first();
   if (!existing) {
     throw new HTTPException(404, { message: 'Template not found' });
   }
 
-  let stmt: any = db.prepare(`
+  const updateStmt = db.prepare(`
     UPDATE email_templates
     SET name = ?, subject = ?, body = ?, category = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ?
   `);
-  stmt = stmt.bind(validated.name);
-  stmt = stmt.bind(validated.subject || null);
-  stmt = stmt.bind(validated.body);
-  stmt = stmt.bind(validated.category || null);
-  stmt = stmt.bind(id);
-  await stmt.run();
+  await updateStmt.bind(validated.name, validated.subject || null, validated.body, validated.category || null, id).run();
 
-  stmt = db.prepare('SELECT * FROM email_templates WHERE id = ?') as any;
-  stmt = stmt.bind(id);
-  const template = await stmt.first();
+  const resultStmt = db.prepare('SELECT * FROM email_templates WHERE id = ?');
+  const template = await resultStmt.bind(id).first();
 
   return c.json({
     message: 'Template updated successfully',
@@ -813,16 +806,14 @@ emailsRoutes.put('/templates/:id', async (c) => {
 
 emailsRoutes.delete('/templates/:id', async (c) => {
   const { id } = c.req.param();
-  const db = (c as any).env.DB as any;
-  let existingStmt: any = db.prepare('SELECT * FROM email_templates WHERE id = ?');
-  existingStmt = existingStmt.bind(id);
-  const existing = await existingStmt.first();
+  const db = getDB(c);
+  const existingStmt = db.prepare('SELECT * FROM email_templates WHERE id = ?');
+  const existing = await existingStmt.bind(id).first();
   if (!existing) {
     throw new HTTPException(404, { message: 'Template not found' });
   }
-  let deleteStmt: any = db.prepare('DELETE FROM email_templates WHERE id = ?');
-  deleteStmt = deleteStmt.bind(id);
-  await deleteStmt.run();
+  const deleteStmt = db.prepare('DELETE FROM email_templates WHERE id = ?');
+  await deleteStmt.bind(id).run();
   return c.json({ message: 'Template deleted successfully' });
 });
 
@@ -867,7 +858,8 @@ emailsRoutes.post('/send', async (c) => {
   let stmt: any;
   if (sentVia === 'db') {
     stmt = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_relay_%'");
-    const settings: any = await stmt.all();
+    const result: any = await stmt.all();
+    const settings = result.results || [];
     const cfg: Record<string, string> = {};
     for (const row of settings || []) {
       const r = row as any;
@@ -877,6 +869,12 @@ emailsRoutes.post('/send', async (c) => {
 
     if (useRelay && cfg.gmail_relay_relay_url && cfg.gmail_relay_api_key) {
       try {
+        // Verify relay URL is valid before attempting
+        const relayUrl = new URL(cfg.gmail_relay_relay_url);
+        if (relayUrl.protocol !== 'https:') {
+          throw new Error('Relay URL must use https protocol');
+        }
+
         const result = await sendViaGmailRelay({
           relayUrl: cfg.gmail_relay_relay_url,
           apiKey: cfg.gmail_relay_api_key,
@@ -901,7 +899,8 @@ emailsRoutes.post('/send', async (c) => {
   // Try Gmail OAuth if configured
   if (sentVia === 'db') {
     stmt = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'gmail_oauth_%'");
-    const oauthSettings: any = await stmt.all();
+    const oauthResult: any = await stmt.all();
+    const oauthSettings = oauthResult.results || [];
     const oauthCfg: Record<string, string> = {};
     for (const row of oauthSettings || []) {
       const r = row as any;
@@ -912,10 +911,21 @@ emailsRoutes.post('/send', async (c) => {
     const fromEmail = oauthCfg.gmail_oauth_from_email || 'info@aetherahealthcare.com';
     const fromName = oauthCfg.gmail_oauth_from_name || 'Aethera Healthcare';
 
-    if (useOauth && oauthCfg.gmail_oauth_access_token) {
-      try {
-        const accessToken = await getGmailOAuthTokens(db);
-        if (accessToken) {
+    if (useOauth) {
+      // Try to get access token from settings first
+      let accessToken = oauthCfg.gmail_oauth_access_token;
+
+      // If no token, try to refresh
+      if (!accessToken) {
+        try {
+          accessToken = await getGmailOAuthTokens(db);
+        } catch (e: any) {
+          console.error('Gmail OAuth token refresh failed:', e.message);
+        }
+      }
+
+      if (accessToken) {
+        try {
           const result = await sendViaGmailOAuth({
             accessToken,
             fromEmail,
@@ -929,10 +939,14 @@ emailsRoutes.post('/send', async (c) => {
           sentVia = 'gmail-oauth';
           status = 'sent';
           sendError = null;
+        } catch (e: any) {
+          console.error('Gmail OAuth failed:', e.message);
+          sendError = e.message;
+          status = 'pending';
         }
-      } catch (e: any) {
-        console.error('Gmail OAuth failed:', e.message);
-        sendError = e.message;
+      } else {
+        // No token available
+        sendError = 'Gmail OAuth configured but no access token. Please exchange authorization code for token via /emails/oauth/token endpoint.';
         status = 'pending';
       }
     }
@@ -943,18 +957,7 @@ emailsRoutes.post('/send', async (c) => {
                        crm_record_type, crm_record_id, owner_id, synced_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'outbound', ?, ?, ?, ?, CURRENT_TIMESTAMP)
   `) as any;
-  stmt = stmt.bind(emailId);
-  stmt = stmt.bind(messageId);
-  stmt = stmt.bind(null);
-  stmt = stmt.bind(fromEmail);
-  stmt = stmt.bind(validated.to);
-  stmt = stmt.bind(validated.subject || '');
-  stmt = stmt.bind(validated.body);
-  stmt = stmt.bind(status);
-  stmt = stmt.bind(validated.crm_record_type || null);
-  stmt = stmt.bind(validated.crm_record_id || null);
-  stmt = stmt.bind(user?.id);
-  await stmt.run();
+  await stmt.bind(emailId, messageId, null, fromEmail, validated.to, validated.subject || '', validated.body, status, validated.crm_record_type || null, validated.crm_record_id || null, user?.id).run();
 
   return c.json({
     message: sendError ? `Email queued with status "${status}" (${sendError})` : `Email sent via ${sentVia}`,
@@ -971,14 +974,15 @@ emailsRoutes.post('/send', async (c) => {
 
 emailsRoutes.get('/thread/:threadId', async (c) => {
   const { threadId } = c.req.param();
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare(`
     SELECT * FROM emails
     WHERE thread_id = ?
     ORDER BY created_at ASC
   `);
   stmt = stmt.bind(threadId);
-  const emails: any = await stmt.all();
+  const result: any = await stmt.all();
+  const emails = result.results || [];
   return c.json({
     data: emails || [],
   });
@@ -1006,7 +1010,7 @@ emailsRoutes.get('/analytics/summary', async (c) => {
         COUNT(CASE WHEN direction = 'outbound' THEN 1 END) as outbound_count
       FROM emails WHERE ${whereClause}
     `;
-    const db = (c as any).env.DB as any;
+    const db = getDB(c);
     let stmt: any = db.prepare(sql);
     for (const b of bindings) {
       stmt = stmt.bind(b);
@@ -1033,12 +1037,13 @@ emailsRoutes.get('/analytics/summary', async (c) => {
       GROUP BY category
       ORDER BY count DESC
     `;
-    const db = (c as any).env.DB as any;
+    const db = getDB(c);
     let stmt: any = db.prepare(sql2);
     for (const b of bindings) {
       stmt = stmt.bind(b);
     }
-    byCategoryResult = await stmt.all();
+    const result: any = await stmt.all();
+    byCategoryResult = result.results || [];
   } catch (e) {
     console.error('Analytics category error:', e);
   }
@@ -1055,7 +1060,7 @@ emailsRoutes.get('/analytics/summary', async (c) => {
 
 emailsRoutes.get('/:id', async (c) => {
   const { id } = c.req.param();
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   let stmt: any = db.prepare('SELECT * FROM emails WHERE id = ?');
   stmt = stmt.bind(id);
   const email = await stmt.first();

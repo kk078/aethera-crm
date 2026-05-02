@@ -39,9 +39,10 @@ backupRoutes.post('/trigger', async (c) => {
     
     for (const table of tables) {
       const result = await ((c as any).env as any).DB.prepare(`SELECT * FROM ${table}`).all();
-      if (result && result.length > 0) {
+      const rows = result.results || [];
+      if (rows.length > 0) {
         exportData.push(`-- Table: ${table}`);
-        for (const row of result) {
+        for (const row of rows) {
           const columns = Object.keys(row).join(', ');
           const values = Object.values(row).map(v => 
             typeof v === 'string' ? `'${v.replace(/'/g, "''")}'` : v
@@ -99,11 +100,12 @@ backupRoutes.get('/list', async (c) => {
     throw new HTTPException(403, { message: 'Admin access required' });
   }
 
-  const backups = await ((c as any).env as any).DB.prepare(`
-    SELECT * FROM backups 
+  const result = await ((c as any).env as any).DB.prepare(`
+    SELECT * FROM backups
     ORDER BY created_at DESC
     LIMIT 50
   `).all();
+  const backups = result.results || [];
 
   return c.json({
     data: backups || [],
@@ -175,12 +177,13 @@ backupRoutes.post('/cleanup', async (c) => {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
 
-  const oldBackups = await ((c as any).env as any).DB.prepare(`
-    SELECT * FROM backups 
+  const result = await ((c as any).env as any).DB.prepare(`
+    SELECT * FROM backups
     WHERE created_at < ? AND status = 'completed'
   `)
     .bind(cutoffDate.toISOString())
     .all();
+  const oldBackups = result.results || [];
 
   let deletedCount = 0;
 

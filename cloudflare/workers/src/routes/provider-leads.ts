@@ -44,24 +44,18 @@ providerLeadRoutes.post('/:npi/lead', async (c) => {
   const user = c.get('user');
   const db = (c as any).env.DB as any;
 
-  let stmt: any = db.prepare(`
+  const provider = await db.prepare(`
     SELECT npi, provider_type, first_name, last_name, organization_name,
            specialty_primary, email, phone, address, city, state, zip,
            medicare_enrollment_status, medicaid_enrollment_status, website
     FROM npi_providers WHERE npi = ?
-  `);
-  stmt = stmt.bind(npi);
-  const provider = await stmt.first();
+  `).bind(npi).first();
 
   if (!provider) {
     throw new HTTPException(404, { message: 'Provider not found' });
   }
 
-  stmt = db.prepare(`
-    SELECT id FROM leads WHERE npi = ?
-  `);
-  stmt = stmt.bind(npi);
-  const existingLead = await stmt.first();
+  const existingLead = await db.prepare(`SELECT id FROM leads WHERE npi = ?`).bind(npi).first();
 
   if (existingLead) {
     throw new HTTPException(409, { message: 'Lead already exists for this provider' });
@@ -69,26 +63,26 @@ providerLeadRoutes.post('/:npi/lead', async (c) => {
 
   const id = generateId();
 
-  stmt = db.prepare(`
+  const result = await db.prepare(`
     INSERT INTO leads (
       id, source, status, first_name, last_name, company, email, phone,
       address, specialty, npi, owner_id, created_at, updated_at, lead_score
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'), ?)
-  `) as any;
-  stmt = stmt.bind(id);
-  stmt = stmt.bind('provider_directory');
-  stmt = stmt.bind('new');
-  stmt = stmt.bind(provider.first_name || null);
-  stmt = stmt.bind(provider.last_name || null);
-  stmt = stmt.bind(provider.organization_name || null);
-  stmt = stmt.bind(provider.email || null);
-  stmt = stmt.bind(provider.phone || null);
-  stmt = stmt.bind(provider.address || null);
-  stmt = stmt.bind(provider.specialty_primary || null);
-  stmt = stmt.bind(provider.npi);
-  stmt = stmt.bind(user?.id);
-  stmt = stmt.bind(50);
-  await stmt.run();
+  `).bind(
+    id,
+    'provider_directory',
+    'new',
+    provider.first_name || null,
+    provider.last_name || null,
+    provider.organization_name || null,
+    provider.email || null,
+    provider.phone || null,
+    provider.address || null,
+    provider.specialty_primary || null,
+    provider.npi,
+    user?.id,
+    50
+  ).run();
 
   return c.json({
     message: 'Provider converted to lead successfully',
@@ -107,11 +101,7 @@ providerLeadRoutes.post('/:npi/lead', async (c) => {
 providerLeadRoutes.get('/:npi/lead', async (c) => {
   const { npi } = c.req.param();
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`
-    SELECT id, status FROM leads WHERE npi = ?
-  `);
-  stmt = stmt.bind(npi);
-  const lead = await stmt.first();
+  const lead = await db.prepare(`SELECT id, status FROM leads WHERE npi = ?`).bind(npi).first();
 
   return c.json({
     data: {
@@ -125,13 +115,11 @@ providerLeadRoutes.get('/:npi/lead', async (c) => {
 providerLeadRoutes.post('/:npi/scrape-email', async (c) => {
   const { npi } = c.req.param();
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`
+  const provider = await db.prepare(`
     SELECT npi, provider_type, first_name, last_name, organization_name,
            specialty_primary, email, phone, address, city, state, website
     FROM npi_providers WHERE npi = ?
-  `);
-  stmt = stmt.bind(npi);
-  const provider = await stmt.first();
+  `).bind(npi).first();
 
   if (!provider) {
     throw new HTTPException(404, { message: 'Provider not found' });
@@ -169,13 +157,10 @@ providerLeadRoutes.post('/:npi/scrape-email', async (c) => {
   // If Hunter found something
   if (hunterResult && hunterResult.email) {
     // Update the provider in database
-    stmt = db.prepare(`
+    await db.prepare(`
       UPDATE npi_providers SET email = ?, updated_at = datetime('now')
       WHERE npi = ?
-    `) as any;
-    stmt = stmt.bind(hunterResult.email);
-    stmt = stmt.bind(npi);
-    await stmt.run();
+    `).bind(hunterResult.email, npi).run();
 
     return c.json({
       data: {
@@ -217,32 +202,24 @@ providerLeadRoutes.patch('/:npi/lead', async (c) => {
   const body = await c.req.json();
   const db = (c as any).env.DB as any;
 
-  let stmt: any = db.prepare(`
-    SELECT id FROM leads WHERE npi = ?
-  `);
-  stmt = stmt.bind(npi);
-  const lead = await stmt.first();
-
+  // Check if lead exists first
+  const lead = await db.prepare(`SELECT id FROM leads WHERE npi = ?`).bind(npi).first();
   if (!lead) {
     throw new HTTPException(404, { message: 'Lead not found' });
   }
 
+  // Update email if provided
   if (body.email) {
-    stmt = db.prepare(`
+    await db.prepare(`
       UPDATE leads SET email = ?, updated_at = datetime('now') WHERE npi = ?
-    `) as any;
-    stmt = stmt.bind(body.email);
-    stmt = stmt.bind(npi);
-    await stmt.run();
+    `).bind(body.email, npi).run();
   }
 
+  // Update phone if provided
   if (body.phone) {
-    stmt = db.prepare(`
+    await db.prepare(`
       UPDATE leads SET phone = ?, updated_at = datetime('now') WHERE npi = ?
-    `) as any;
-    stmt = stmt.bind(body.phone);
-    stmt = stmt.bind(npi);
-    await stmt.run();
+    `).bind(body.phone, npi).run();
   }
 
   return c.json({ message: 'Lead updated successfully' });
@@ -252,11 +229,17 @@ providerLeadRoutes.patch('/:npi/lead', async (c) => {
 providerLeadRoutes.delete('/:npi/lead', async (c) => {
   const { npi } = c.req.param();
   const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`
+
+  // Check if lead exists first
+  const lead = await db.prepare(`SELECT id FROM leads WHERE npi = ?`).bind(npi).first();
+
+  if (!lead) {
+    throw new HTTPException(404, { message: 'Lead not found for this provider' });
+  }
+
+  const result = await db.prepare(`
     UPDATE leads SET deleted_at = datetime('now'), status = 'deleted' WHERE npi = ?
-  `);
-  stmt = stmt.bind(npi);
-  const result = await stmt.run();
+  `).bind(npi).run();
 
   return c.json({
     message: 'Lead removed successfully (marked as deleted)',

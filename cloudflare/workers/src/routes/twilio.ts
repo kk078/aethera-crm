@@ -4,7 +4,23 @@ import { SignJWT } from 'jose';
 import { generateId } from '../utils/helpers';
 import { twilioConfigSchema, callOutcomeSchema } from '../utils/validation';
 import { findBillingAnswer } from './billing-knowledge';
+import { ErrorLogger } from '../utils/error-logger';
 import type { AppEnv } from '../types';
+
+// Helper function to get DB binding
+function getDB(c: any) {
+  const db = (c as any).env.DB;
+  if (!db) {
+    throw new HTTPException(500, { message: 'Database binding not available' });
+  }
+  return db;
+}
+
+// Helper function to get ErrorLogger instance
+function getErrorLogger(c: any) {
+  const db = getDB(c);
+  return new ErrorLogger(db, 'twilio-webhook');
+}
 
 export const twilioRoutes = new Hono<AppEnv>();
 
@@ -14,17 +30,25 @@ const COMPANY = 'Aethera Healthcare Solutions';
 twilioRoutes.get('/config', async (c) => {
   const user = c.get('user');
   if (!user) throw new HTTPException(401, { message: 'Authentication required' });
-  const db = (c as any).env.DB as any;
-  const stmt: any = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'twilio_%'");
-  const settings: any = await stmt.all();
-  const config: Record<string, string> = {};
-  for (const row of settings || []) {
-    const r = row as any;
-    const key = r.key.replace('twilio_', '');
-    if (key === 'auth_token' || key === 'account_sid') { config[key] = r.value ? '••••••••' : ''; }
-    else { config[key] = r.value || ''; }
+  const db = getDB(c);
+  try {
+    const stmt = db.prepare("SELECT key, value FROM settings WHERE key LIKE 'twilio_%'");
+    const result = await stmt.all();
+    const settings = result.results || [];
+    const config: Record<string, string> = {};
+    for (const row of settings) {
+      const key = (row as any).key.replace('twilio_', '');
+      if (key === 'auth_token' || key === 'account_sid') {
+        config[key] = (row as any).value ? '••••••••' : '';
+      } else {
+        config[key] = (row as any).value || '';
+      }
+    }
+    return c.json({ data: { account_sid: config.account_sid || '', auth_token: config.auth_token || '', phone_number: config.phone_number || '', enabled: config.enabled === 'true' } });
+  } catch (error: any) {
+    console.error('Error fetching twilio config:', error);
+    throw new HTTPException(500, { message: `Failed to fetch Twilio config: ${error.message}` });
   }
-  return c.json({ data: { account_sid: config.account_sid || '', auth_token: config.auth_token || '', phone_number: config.phone_number || '', enabled: config.enabled === 'true' } });
 });
 
 twilioRoutes.put('/config', async (c) => {
@@ -33,22 +57,16 @@ twilioRoutes.put('/config', async (c) => {
   const body = await c.req.json();
   const validated = twilioConfigSchema.parse(body);
   const pairs: Record<string, string> = { twilio_account_sid: validated.account_sid, twilio_auth_token: validated.auth_token, twilio_phone_number: validated.phone_number, twilio_enabled: validated.enabled ? 'true' : 'false' };
-  const db = (c as any).env.DB as any;
+  const db = getDB(c);
   for (const [key, value] of Object.entries(pairs)) {
-    let stmt: any = db.prepare("SELECT id FROM settings WHERE key = ?");
-    stmt = stmt.bind(key);
-    const existing = await stmt.first();
+    const existingStmt = db.prepare("SELECT id FROM settings WHERE key = ?");
+    const existing = await existingStmt.bind(key).first();
     if (existing) {
-      stmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?") as any;
-      stmt = stmt.bind(value);
-      stmt = stmt.bind(key);
-      await stmt.run();
+      const updateStmt = db.prepare("UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?");
+      await updateStmt.bind(value, key).run();
     } else {
-      stmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'twilio')") as any;
-      stmt = stmt.bind(generateId());
-      stmt = stmt.bind(key);
-      stmt = stmt.bind(value);
-      await stmt.run();
+      const insertStmt = db.prepare("INSERT INTO settings (id, key, value, category) VALUES (?, ?, ?, 'twilio')");
+      await insertStmt.bind(generateId(), key, value).run();
     }
   }
   return c.json({ message: 'Twilio configuration saved successfully' });
@@ -58,15 +76,13 @@ async function getTwilioClient(c: any): Promise<{ baseUrl: string; authHeader: s
   let accountSid = (c as any).env.TWILIO_ACCOUNT_SID;
   let authToken = (c as any).env.TWILIO_AUTH_TOKEN;
   if (!accountSid || !authToken) {
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare("SELECT value FROM settings WHERE key = 'twilio_account_sid'");
-    stmt = stmt.bind('twilio_account_sid');
-    const sidSetting = await stmt.first();
-    stmt = db.prepare("SELECT value FROM settings WHERE key = 'twilio_auth_token'") as any;
-    stmt = stmt.bind('twilio_auth_token');
-    const tokenSetting = await stmt.first();
-    if (sidSetting) accountSid = (sidSetting as any).value;
-    if (tokenSetting) authToken = (tokenSetting as any).value;
+    const db = getDB(c);
+    const sidStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+    const sidSetting = await sidStmt.bind('twilio_account_sid').first();
+    const tokenStmt = db.prepare("SELECT value FROM settings WHERE key = ?");
+    const tokenSetting = await tokenStmt.bind('twilio_auth_token').first();
+    if (sidSetting && sidSetting.value) accountSid = sidSetting.value;
+    if (tokenSetting && tokenSetting.value) authToken = tokenSetting.value;
   }
   if (!accountSid || !authToken) throw new HTTPException(400, { message: 'Twilio not configured.' });
   return { baseUrl: 'https://api.twilio.com/2010-04-01', authHeader: `Basic ${btoa(`${accountSid}:${authToken}`)}`, accountSid };
@@ -182,14 +198,7 @@ twilioRoutes.post('/calls', async (c) => {
   }
   const call = await response.json();
   const callId = generateId();
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, owner_id, created_at) VALUES (?, ?, ?, ?, 'outbound', 'queued', ?, datetime('now'))`);
-  stmt = stmt.bind(callId);
-  stmt = stmt.bind((call as any).sid);
-  stmt = stmt.bind(fromNumber);
-  stmt = stmt.bind(to_number);
-  stmt = stmt.bind(user?.id);
-  await stmt.run();
+  await getDB(c).prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, owner_id, created_at) VALUES (?, ?, ?, ?, 'outbound', 'queued', ?, datetime('now'))`).bind(callId, (call as any).sid, fromNumber, to_number, user?.id).run();
   return c.json({ message: 'Call initiated with AI assistant', data: { id: callId, twilio_call_sid: (call as any).sid, status: (call as any).status } });
 });
 
@@ -221,19 +230,68 @@ twilioRoutes.patch('/calls/:id/outcome', async (c) => {
   const { id } = c.req.param();
   const body = await c.req.json();
   const validated = callOutcomeSchema.parse(body);
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare('SELECT id FROM phone_calls WHERE id = ? OR twilio_call_sid = ?');
-  stmt = stmt.bind(id);
-  stmt = stmt.bind(id);
-  const existing = await stmt.first();
-  if (!existing) throw new HTTPException(404, { message: 'Call not found' });
-  stmt = db.prepare(`UPDATE phone_calls SET notes = ?, status = ? WHERE id = ? OR twilio_call_sid = ?`) as any;
-  stmt = stmt.bind(`[OUTCOME:${validated.outcome}] ${validated.notes || ''}`.trim());
-  stmt = stmt.bind(validated.outcome);
-  stmt = stmt.bind(id);
-  stmt = stmt.bind(id);
-  await stmt.run();
-  return c.json({ message: 'Outcome saved' });
+  const db = getDB(c);
+  const errorLogger = getErrorLogger(c);
+
+  try {
+    // UPSERT pattern: First try to find by twilio_call_sid, then by id
+    let existing = await db.prepare('SELECT id, twilio_call_sid FROM phone_calls WHERE twilio_call_sid = ?').bind(id).first();
+    if (!existing) {
+      existing = await db.prepare('SELECT id, twilio_call_sid FROM phone_calls WHERE id = ?').bind(id).first();
+    }
+
+    const outcome = validated.outcome;
+    const notes = `[OUTCOME:${outcome}] ${validated.notes || ''}`.trim();
+
+    if (!existing) {
+      // Create a new record with reconciled_post_call flag for cases where webhook didn't create one
+      const newId = generateId();
+      await db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, status, reconciled_post_call, created_at, updated_at) VALUES (?, ?, ?, 1, datetime('now'), datetime('now'))`).bind(newId, id, 'completed').run();
+      await db.prepare(`UPDATE phone_calls SET notes = ?, status = ? WHERE id = ?`).bind(notes, outcome, newId).run();
+    } else {
+      // Update existing record with reconciliation flag
+      const callId = existing.id;
+      await db.prepare(`UPDATE phone_calls SET notes = ?, status = ?, reconciled_post_call = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(notes, outcome, callId).run();
+    }
+  } catch (e: any) {
+    await errorLogger.logError(e, { id, outcome: validated.outcome });
+    throw new HTTPException(500, { message: `Failed to save outcome: ${e.message}` });
+  }
+
+  return c.json({ message: 'Outcome saved', reconciled: true });
+});
+
+// ───── Pre-flight Call Initialization (for Optimistic UI) ─────
+// Creates a Pending call record before Twilio connects, enabling optimistic UI updates
+twilioRoutes.post('/calls/init', async (c) => {
+  const user = c.get('user');
+  if (!user) throw new HTTPException(401, { message: 'Authentication required' });
+  const body = await c.req.json();
+  const { from_number, to_number, direction = 'outbound' } = body;
+
+  if (!to_number) throw new HTTPException(400, { message: 'To number is required' });
+
+  const db = getDB(c);
+  const errorLogger = getErrorLogger(c);
+
+  try {
+    const callId = generateId();
+    const twilioCallSid = `pending-${callId}`;
+
+    // Create a Pending record for optimistic UI
+    await db.prepare(`
+      INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))
+    `).bind(callId, twilioCallSid, from_number || (c as any).env.TWILIO_PHONE_NUMBER, to_number, direction).run();
+
+    return c.json({
+      message: 'Call initialized',
+      data: { id: callId, status: 'pending', twilio_call_sid: twilioCallSid }
+    });
+  } catch (e: any) {
+    await errorLogger.logError(e, { from_number, to_number, direction });
+    throw new HTTPException(500, { message: `Failed to initialize call: ${e.message}` });
+  }
 });
 
 // ───── AI Medical Billing Call TwiML ─────
@@ -248,31 +306,26 @@ twilioRoutes.all('/call-twiml', async (c) => {
   const callStatus = (body.get('CallStatus') || '') as string;
   const answeredBy = (body.get('AnsweredBy') || '') as string;
 
+  // Error logger for this webhook
+  const errorLogger = getErrorLogger(c);
+
   // Store the call record
   let inboundCallId = null;
   if (callSid && callStatus) {
     try {
-      const db = (c as any).env.DB as any;
-      let stmt: any = db.prepare('SELECT id FROM phone_calls WHERE twilio_call_sid = ?');
-      stmt = stmt.bind(callSid);
-      const existing = await stmt.first();
+      const db = getDB(c);
+      const existing = await db.prepare('SELECT id FROM phone_calls WHERE twilio_call_sid = ?').bind(callSid).first();
       if (!existing) {
         inboundCallId = generateId();
-        stmt = db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, created_at) VALUES (?, ?, ?, ?, 'inbound', ?, datetime('now'))`) as any;
-        stmt = stmt.bind(inboundCallId);
-        stmt = stmt.bind(callSid);
-        stmt = stmt.bind(fromNumber);
-        stmt = stmt.bind(toNumber);
-        stmt = stmt.bind(callStatus);
-        await stmt.run();
+        await db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, created_at) VALUES (?, ?, ?, ?, 'inbound', ?, datetime('now'))`).bind(inboundCallId, callSid, fromNumber, toNumber, callStatus).run();
       } else {
         inboundCallId = (existing as any).id;
-        stmt = db.prepare(`UPDATE phone_calls SET status = ? WHERE twilio_call_sid = ?`) as any;
-        stmt = stmt.bind(callStatus);
-        stmt = stmt.bind(callSid);
-        await stmt.run();
+        await db.prepare(`UPDATE phone_calls SET status = ? WHERE twilio_call_sid = ?`).bind(callStatus, callSid).run();
       }
-    } catch (e) {}
+    } catch (e: any) {
+      await errorLogger.logError(e, { callSid, fromNumber, toNumber, callStatus });
+      console.error('Error storing call record:', e);
+    }
   }
 
   // ───── Voicemail Detection ─────
@@ -281,15 +334,13 @@ twilioRoutes.all('/call-twiml', async (c) => {
     try {
       if (!vmCallId) {
         vmCallId = generateId();
-        const db = (c as any).env.DB as any;
-        let stmt: any = db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, created_at) VALUES (?, ?, ?, ?, 'inbound', 'voicemail', datetime('now'))`);
-        stmt = stmt.bind(vmCallId);
-        stmt = stmt.bind(callSid);
-        stmt = stmt.bind(fromNumber);
-        stmt = stmt.bind(toNumber);
-        await stmt.run();
+        const db = getDB(c);
+        await db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, created_at) VALUES (?, ?, ?, ?, 'inbound', 'voicemail', datetime('now'))`).bind(vmCallId, callSid, fromNumber, toNumber).run();
       }
-    } catch (e) {}
+    } catch (e: any) {
+      await errorLogger.logError(e, { callSid, fromNumber, toNumber });
+      console.error('Error creating voicemail record:', e);
+    }
 
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -308,16 +359,11 @@ twilioRoutes.all('/call-twiml', async (c) => {
 
   // Handle "press 1 for specialist"
   if (pressedDigits === '1' || query.toLowerCase().includes('speak') || query.toLowerCase().includes('agent') || query.toLowerCase().includes('representative') || query.toLowerCase().includes('human') || query.toLowerCase().includes('person')) {
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare('SELECT id, transcription FROM phone_calls WHERE twilio_call_sid = ?');
-    stmt = stmt.bind(callSid);
-    const callRecord = await stmt.first();
+    const db = getDB(c);
+    const callRecord = await db.prepare('SELECT id, transcription FROM phone_calls WHERE twilio_call_sid = ?').bind(callSid).first();
     if (callRecord) {
       const existingTrans = (callRecord as any).transcription || '';
-      stmt = db.prepare(`UPDATE phone_calls SET transcription = ? WHERE twilio_call_sid = ?`) as any;
-      stmt = stmt.bind(existingTrans + `\nCaller requested to speak with a billing specialist.`);
-      stmt = stmt.bind(callSid);
-      await stmt.run();
+      await db.prepare(`UPDATE phone_calls SET transcription = ? WHERE twilio_call_sid = ?`).bind(existingTrans + `\nCaller requested to speak with a billing specialist.`, callSid).run();
     }
     const fromNum = c.env.TWILIO_PHONE_NUMBER || '+18636940325';
     await sendSmsNotification(c, fromNum, `📞 Callback requested from ${fromNumber} - called ${COMPANY} billing support and requested a specialist callback.`).catch(() => {});
@@ -348,16 +394,11 @@ twilioRoutes.all('/call-twiml', async (c) => {
     } else {
       responseText = 'I could not find a specific answer in our billing knowledge base. You can say "denial management", "CPT codes", or "claim status" for common topics.';
     }
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare('SELECT id, transcription FROM phone_calls WHERE twilio_call_sid = ?');
-    stmt = stmt.bind(callSid);
-    const callRecord = await stmt.first();
+    const db = getDB(c);
+    const callRecord = await db.prepare('SELECT id, transcription FROM phone_calls WHERE twilio_call_sid = ?').bind(callSid).first();
     if (callRecord) {
       const existingTrans = (callRecord as any).transcription || '';
-      stmt = db.prepare(`UPDATE phone_calls SET transcription = ? WHERE twilio_call_sid = ?`) as any;
-      stmt = stmt.bind(existingTrans + `\nCaller: ${query}\nAI: ${responseText}`);
-      stmt = stmt.bind(callSid);
-      await stmt.run();
+      await db.prepare(`UPDATE phone_calls SET transcription = ? WHERE twilio_call_sid = ?`).bind(existingTrans + `\nCaller: ${query}\nAI: ${responseText}`, callSid).run();
     }
     return c.text(`<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">${escapeXml(responseText)}</Say><Gather input="speech dtmf" timeout="5" numDigits="1" speechTimeout="auto" action="/api/v1/twilio/call-twiml" method="POST"><Say voice="Polly.Joanna">Would you like to ask another question? Press 1 or say yes to continue. Press 2 or say no to end.</Say></Gather><Say voice="Polly.Joanna">Thank you for calling ${COMPANY}. Goodbye.</Say><Hangup/></Response>`, 200, { 'Content-Type': 'text/xml' });
   }
@@ -383,23 +424,27 @@ twilioRoutes.all('/voicemail-callback', async (c) => {
   const recordingSid = (body.get('RecordingSid') || '') as string;
   const callIdFromQuery = c.req.query('call_id') || '';
 
-  if (recordingUrl && callIdFromQuery) {
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare(`UPDATE phone_calls SET recording_url = ?, status = 'voicemail' WHERE id = ?`);
-    stmt = stmt.bind(recordingUrl);
-    stmt = stmt.bind(callIdFromQuery);
-    await stmt.run();
-  } else if (recordingUrl && callSid) {
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare(`UPDATE phone_calls SET recording_url = ?, status = 'voicemail' WHERE twilio_call_sid = ?`);
-    stmt = stmt.bind(recordingUrl);
-    stmt = stmt.bind(callSid);
-    await stmt.run();
+  const errorLogger = getErrorLogger(c);
+
+  try {
+    if (recordingUrl && callIdFromQuery) {
+      await getDB(c).prepare(`UPDATE phone_calls SET recording_url = ?, status = 'voicemail' WHERE id = ?`).bind(recordingUrl, callIdFromQuery).run();
+    } else if (recordingUrl && callSid) {
+      await getDB(c).prepare(`UPDATE phone_calls SET recording_url = ?, status = 'voicemail' WHERE twilio_call_sid = ?`).bind(recordingUrl, callSid).run();
+    } else if (recordingUrl && callIdFromQuery === '' && callSid === '') {
+      await errorLogger.logWarning('Voicemail callback called without call_id or call_sid', { recordingUrl });
+    }
+  } catch (e: any) {
+    await errorLogger.logError(e, { recordingUrl, callIdFromQuery, callSid });
   }
 
   const fromNum = c.env.TWILIO_PHONE_NUMBER || '+18636940325';
   const msg = `📞 New voicemail from ${fromNumber}. Listen: ${recordingUrl}`;
-  await sendSmsNotification(c, fromNum, msg).catch(() => {});
+  try {
+    await sendSmsNotification(c, fromNum, msg);
+  } catch (e: any) {
+    await errorLogger.logError(e, { fromNumber, recordingUrl });
+  }
 
   return c.text(`<?xml version="1.0" encoding="UTF-8"?><Response><Say voice="Polly.Joanna">Your message has been recorded. Someone from ${COMPANY} will get back to you shortly. Goodbye.</Say><Hangup/></Response>`, 200, { 'Content-Type': 'text/xml' });
 });
@@ -417,30 +462,24 @@ twilioRoutes.all('/call-twiml/status', async (c) => {
   const recordingUrl = (body.get('RecordingUrl') || '') as string;
   const answeredBy = (body.get('AnsweredBy') || '') as string;
 
-  if (callSid) {
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare(`UPDATE phone_calls SET status = ?, duration = ?, recording_url = ? WHERE twilio_call_sid = ?`);
-    stmt = stmt.bind(callStatus);
-    stmt = stmt.bind(duration ? parseInt(duration) : null);
-    stmt = stmt.bind(recordingUrl);
-    stmt = stmt.bind(callSid);
-    await stmt.run();
+  const errorLogger = getErrorLogger(c);
 
-    // Auto-detect outcome from duration
-    if (callStatus === 'completed' && duration) {
-      const dur = parseInt(duration);
-      if (dur < 15) {
-        stmt = db.prepare(`UPDATE phone_calls SET notes = ? WHERE twilio_call_sid = ?`) as any;
-        stmt = stmt.bind(`[OUTCOME:no_answer] Call lasted ${dur}s`);
-        stmt = stmt.bind(callSid);
-        await stmt.run();
-      } else if (dur > 120) {
-        stmt = db.prepare(`UPDATE phone_calls SET notes = ? WHERE twilio_call_sid = ?`) as any;
-        stmt = stmt.bind(`[OUTCOME:interested_positive] Call lasted ${dur}s`);
-        stmt = stmt.bind(callSid);
-        await stmt.run();
+  try {
+    if (callSid) {
+      await getDB(c).prepare(`UPDATE phone_calls SET status = ?, duration = ?, recording_url = ? WHERE twilio_call_sid = ?`).bind(callStatus, duration ? parseInt(duration) : null, recordingUrl, callSid).run();
+
+      // Auto-detect outcome from duration
+      if (callStatus === 'completed' && duration) {
+        const dur = parseInt(duration);
+        if (dur < 15) {
+          await getDB(c).prepare(`UPDATE phone_calls SET notes = ? WHERE twilio_call_sid = ?`).bind(`[OUTCOME:no_answer] Call lasted ${dur}s`, callSid).run();
+        } else if (dur > 120) {
+          await getDB(c).prepare(`UPDATE phone_calls SET notes = ? WHERE twilio_call_sid = ?`).bind(`[OUTCOME:interested_positive] Call lasted ${dur}s`, callSid).run();
+        }
       }
     }
+  } catch (e: any) {
+    await errorLogger.logError(e, { callSid, callStatus, duration, recordingUrl });
   }
   return c.text('OK');
 });
@@ -448,19 +487,18 @@ twilioRoutes.all('/call-twiml/status', async (c) => {
 // Existing webhook
 twilioRoutes.post('/webhook', async (c) => {
   const body = await c.req.formData();
-  if (body.get('MessageSid')) {
-    const messageSid = body.get('MessageSid') as string;
-    const from = body.get('From') as string;
-    const to = body.get('To') as string;
-    const messageBody = body.get('Body') as string;
-    const db = (c as any).env.DB as any;
-    let stmt: any = db.prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, transcription) VALUES (?, ?, ?, ?, 'inbound', 'received', ?)`);
-    stmt = stmt.bind(generateId());
-    stmt = stmt.bind(messageSid);
-    stmt = stmt.bind(from);
-    stmt = stmt.bind(to);
-    stmt = stmt.bind(messageBody);
-    await stmt.run();
+  const errorLogger = getErrorLogger(c);
+
+  try {
+    if (body.get('MessageSid')) {
+      const messageSid = body.get('MessageSid') as string;
+      const from = body.get('From') as string;
+      const to = body.get('To') as string;
+      const messageBody = body.get('Body') as string;
+      await getDB(c).prepare(`INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, transcription) VALUES (?, ?, ?, ?, 'inbound', 'received', ?)`).bind(generateId(), messageSid, from, to, messageBody).run();
+    }
+  } catch (e: any) {
+    await errorLogger.logError(e, { messageSid: body.get('MessageSid') });
   }
   return c.json({ success: true });
 });
@@ -475,12 +513,12 @@ twilioRoutes.get('/calls/log', async (c) => {
   if (user?.role !== 'admin') { whereClause += ' AND owner_id = ?'; bindings.push(user?.id); }
   if (query.status) { whereClause += ' AND status = ?'; bindings.push(query.status); }
   if (query.direction) { whereClause += ' AND direction = ?'; bindings.push(query.direction); }
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare(`SELECT pc.*, c.first_name, c.last_name FROM phone_calls pc LEFT JOIN contacts c ON pc.contact_id = c.id ${whereClause} ORDER BY pc.created_at DESC LIMIT 50`);
-  for (const b of bindings) {
-    stmt = stmt.bind(b);
-  }
-  const calls: any = await stmt.all();
+  const db = getDB(c);
+  const queryBindings = [];
+  if (user?.role !== 'admin') { whereClause += ' AND owner_id = ?'; queryBindings.push(user?.id); }
+  if (query.status) { whereClause += ' AND status = ?'; queryBindings.push(query.status); }
+  if (query.direction) { whereClause += ' AND direction = ?'; queryBindings.push(query.direction); }
+  const calls: any = await db.prepare(`SELECT pc.*, c.first_name, c.last_name FROM phone_calls pc LEFT JOIN contacts c ON pc.contact_id = c.id ${whereClause} ORDER BY pc.created_at DESC LIMIT 50`).bind(...queryBindings).all();
   return c.json({ data: calls || [] });
 });
 
@@ -493,10 +531,8 @@ twilioRoutes.get('/calls/:sid', async (c) => {
   const response = await fetch(`${baseUrl}/Accounts/${(c as any).env.TWILIO_ACCOUNT_SID}/Calls/${sid}.json`, { headers: { 'Authorization': authHeader } });
   if (!response.ok) throw new HTTPException(404, { message: 'Call not found' });
   const call: Record<string, any> = await response.json();
-  const db = (c as any).env.DB as any;
-  let stmt: any = db.prepare('SELECT * FROM phone_calls WHERE twilio_call_sid = ?');
-  stmt = stmt.bind(sid);
-  const dbCall = await stmt.first();
+  const db = getDB(c);
+  const dbCall = await db.prepare('SELECT * FROM phone_calls WHERE twilio_call_sid = ?').bind(sid).first();
   return c.json({ data: { ...call, crm_record: dbCall } });
 });
 
@@ -516,4 +552,84 @@ twilioRoutes.get('/usage/stats', async (c) => {
   if (!response.ok) throw new HTTPException(400, { message: 'Failed to fetch usage' });
   const usage: { usage_records?: any[] } = await response.json();
   return c.json({ data: { usage_records: usage.usage_records || [] } });
+});
+
+// ───── Status Reconciliation (for Cron Job) ─────
+// Sync missing Twilio SIDs from the last hour that are missing from the phone_calls table
+twilioRoutes.post('/reconcile', async (c) => {
+  const user = c.get('user');
+  if (!user) throw new HTTPException(401, { message: 'Authentication required' });
+  if (user.role !== 'admin') throw new HTTPException(403, { message: 'Admin access required' });
+
+  const errorLogger = getErrorLogger(c);
+  const db = getDB(c);
+
+  try {
+    const { hours = 1 } = await c.req.json();
+
+    // Get Twilio configuration
+    const { baseUrl, authHeader, accountSid } = await getTwilioClient(c);
+
+    // Fetch calls from Twilio API from the last N hours
+    const since = new Date();
+    since.setHours(since.getHours() - hours);
+
+    const response = await fetch(
+      `${baseUrl}/Accounts/${accountSid}/Calls.json?DateCreated>=${since.toISOString()}`,
+      { headers: { 'Authorization': authHeader } }
+    );
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new HTTPException(400, { message: `Twilio API error: ${(error as any).message}` });
+    }
+
+    const data: { calls?: any[] } = await response.json();
+    const calls = data.calls || [];
+
+    let imported = 0;
+    let existing = 0;
+
+    for (const call of calls) {
+      const sid = call.sid;
+      const existingRecord = await db.prepare('SELECT id FROM phone_calls WHERE twilio_call_sid = ?').bind(sid).first();
+
+      if (!existingRecord) {
+        // Create record from Twilio data
+        const callId = generateId();
+        await db.prepare(`
+          INSERT INTO phone_calls (id, twilio_call_sid, from_number, to_number, direction, status, duration, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          callId,
+          sid,
+          call.from || null,
+          call.to || null,
+          call.direction === 'inbound' ? 'inbound' : 'outbound',
+          call.status,
+          call.duration ? parseInt(call.duration) : null,
+          call.date_created || new Date().toISOString()
+        ).run();
+        imported++;
+      } else {
+        existing++;
+      }
+    }
+
+    await ErrorLogger.logToSystem(db, 'INFO', 'twilio-reconciliation', `Reconciliation completed`, {
+      imported,
+      existing,
+      hours,
+    });
+
+    return c.json({
+      message: 'Reconciliation completed',
+      imported,
+      existing,
+      total: calls.length,
+    });
+  } catch (e: any) {
+    await errorLogger.logError(e, { hours: c.req.json().then((j: any) => j.hours || 1) });
+    throw new HTTPException(500, { message: `Reconciliation failed: ${e.message}` });
+  }
 });

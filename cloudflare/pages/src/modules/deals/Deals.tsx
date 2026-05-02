@@ -1,17 +1,22 @@
 import React, { useState } from 'react';
-import { Card, Typography, Button, Space, Tag, Modal, Form, Input, InputNumber, Select, DatePicker, message, Table } from 'antd';
+import { Card, Typography, Button, Space, Tag, Modal, Form, Input, InputNumber, Select, DatePicker, message, Table, Tabs, Descriptions } from 'antd';
 import { PlusOutlined, DollarOutlined } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { dealsAPI } from '@services/api';
+import { dealsAPI, onboardingAPI } from '@services/api';
 import dayjs from 'dayjs';
+
+import DealDetail from './DealDetail';
 
 const { Title } = Typography;
 const { TextArea } = Input;
+const { TabPane } = Tabs;
 
 const Deals: React.FC = () => {
   const queryClient = useQueryClient();
   const [modalVisible, setModalVisible] = useState(false);
   const [editingDeal, setEditingDeal] = useState<any>(null);
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
+  const [selectedDealId, setSelectedDealId] = useState<string | null>(null);
   const [form] = Form.useForm();
 
   const { data, isLoading } = useQuery({
@@ -22,6 +27,11 @@ const Deals: React.FC = () => {
   const { data: pipelineData } = useQuery({
     queryKey: ['deals-pipeline'],
     queryFn: () => dealsAPI.getPipeline(),
+  });
+
+  const { data: onboardingStages } = useQuery({
+    queryKey: ['onboarding-stages'],
+    queryFn: () => onboardingAPI.getStatuses(),
   });
 
   const createMutation = useMutation({
@@ -80,6 +90,11 @@ const Deals: React.FC = () => {
     setModalVisible(true);
   };
 
+  const handleViewDetails = (record: any) => {
+    setSelectedDealId(record.id);
+    setDetailModalVisible(true);
+  };
+
   const handleDelete = (record: any) => {
     Modal.confirm({
       title: 'Are you sure?',
@@ -97,7 +112,7 @@ const Deals: React.FC = () => {
       'Closed Won': 100,
       'Closed Lost': 0,
     };
-    
+
     updateStageMutation.mutate({
       id: record.id,
       stage: newStage,
@@ -110,7 +125,7 @@ const Deals: React.FC = () => {
       ...values,
       expected_close_date: values.expected_close_date ? values.expected_close_date.format('YYYY-MM-DD') : null,
     };
-    
+
     if (editingDeal) {
       updateMutation.mutate({ id: editingDeal.id, data });
     } else {
@@ -139,6 +154,12 @@ const Deals: React.FC = () => {
     'Closed Lost',
   ];
 
+  // RCM Pipeline stages - statuses endpoint returns data directly (not nested in .data)
+  const onboardingData = onboardingStages?.data || onboardingStages || {};
+  const pipelineStages = onboardingData.pipeline_stages || [
+    'qualified', 'proposal_sent', 'contract_signed', 'credentialing', 'technical_setup', 'active', 'closed'
+  ];
+
   const columns = [
     {
       title: 'Deal Name',
@@ -156,40 +177,40 @@ const Deals: React.FC = () => {
       key: 'organization_name',
     },
     {
+      title: 'Provider',
+      dataIndex: 'provider_organization',
+      key: 'provider_organization',
+    },
+    {
       title: 'Amount',
       dataIndex: 'amount',
       key: 'amount',
       render: (amount: number) => amount ? `$${amount.toLocaleString()}` : '-',
     },
     {
-      title: 'Stage',
-      dataIndex: 'stage',
-      key: 'stage',
+      title: 'Pipeline Stage',
+      dataIndex: 'pipeline_stage',
+      key: 'pipeline_stage',
       render: (stage: string, record: any) => (
-        <Select
-          value={stage}
-          onChange={(value) => handleStageChange(record, value)}
-          style={{ width: 120 }}
-        >
-          {stages.map((s) => (
-            <Select.Option key={s} value={s}>
-              {s}
-            </Select.Option>
-          ))}
-        </Select>
+        <Tag color={getStageColor(stage)}>{stage}</Tag>
       ),
     },
     {
-      title: 'Probability',
-      dataIndex: 'probability',
-      key: 'probability',
-      render: (prob: number) => prob ? `${prob}%` : '-',
+      title: 'Onboarding Stage',
+      dataIndex: 'onboarding_stage',
+      key: 'onboarding_stage',
     },
     {
       title: 'Actions',
       key: 'actions',
       render: (_: any, record: any) => (
         <Space>
+          <Button
+            type="link"
+            onClick={() => handleViewDetails(record)}
+          >
+            Details
+          </Button>
           <Button
             type="link"
             onClick={() => handleEdit(record)}
@@ -208,14 +229,14 @@ const Deals: React.FC = () => {
     },
   ];
 
-  const totalPipelineValue = pipelineData?.data.data?.reduce((acc: any, stage: any) => acc + (stage.total_amount || 0), 0) || 0;
+  const totalPipelineValue = pipelineData?.data.pipeline?.reduce((acc: any, stage: any) => acc + (stage.total_amount || 0), 0) || 0;
 
   return (
     <div className="page-container">
       <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div>
           <Title level={2}>Deals</Title>
-          <p>Manage your sales pipeline</p>
+          <p>Manage your RCM sales pipeline</p>
         </div>
         <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
           Add Deal
@@ -231,7 +252,7 @@ const Deals: React.FC = () => {
           </div>
         </div>
         <Space wrap size="large">
-          {pipelineData?.data.data?.map((stage: any, index: number) => (
+          {pipelineData?.data.pipeline?.map((stage: any, index: number) => (
             <div key={index} style={{ textAlign: 'center' }}>
               <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#1890ff' }}>
                 {stage.count || 0}
@@ -276,7 +297,7 @@ const Deals: React.FC = () => {
           <Form.Item name="name" label="Deal Name" rules={[{ required: true }]}>
             <Input placeholder="Enter deal name" />
           </Form.Item>
-          
+
           <Form.Item name="stage" label="Stage" initialValue="Prospecting" rules={[{ required: true }]}>
             <Select>
               {stages.map((s) => (
@@ -284,7 +305,15 @@ const Deals: React.FC = () => {
               ))}
             </Select>
           </Form.Item>
-          
+
+          <Form.Item name="pipeline_stage" label="Pipeline Stage" initialValue="qualified">
+            <Select>
+              {pipelineStages.map((s: string) => (
+                <Select.Option key={s} value={s}>{s.replace(/_/g, ' ').toUpperCase()}</Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+
           <Form.Item name="amount" label="Amount ($)">
             <InputNumber
               style={{ width: '100%' }}
@@ -293,19 +322,19 @@ const Deals: React.FC = () => {
               placeholder="Enter deal amount"
             />
           </Form.Item>
-          
+
           <Form.Item name="probability" label="Probability (%)">
             <InputNumber min={0} max={100} style={{ width: '100%' }} placeholder="Enter probability" />
           </Form.Item>
-          
+
           <Form.Item name="expected_close_date" label="Expected Close Date">
             <DatePicker style={{ width: '100%' }} placeholder="Select expected close date" />
           </Form.Item>
-          
+
           <Form.Item name="lost_reason" label="Lost Reason">
             <TextArea rows={3} placeholder="Reason for losing this deal" />
           </Form.Item>
-          
+
           <Form.Item>
             <Button type="primary" htmlType="submit" loading={createMutation.isPending || updateMutation.isPending}>
               {editingDeal ? 'Update' : 'Create'}
@@ -313,6 +342,13 @@ const Deals: React.FC = () => {
           </Form.Item>
         </Form>
       </Modal>
+
+      {/* Deal Details Modal with Technical Checklist */}
+      <DealDetail
+        dealId={selectedDealId}
+        visible={detailModalVisible}
+        onClose={() => setDetailModalVisible(false)}
+      />
     </div>
   );
 };
