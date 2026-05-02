@@ -20,7 +20,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: cd cloudflare/workers && npm ci
+        run: cd cloudflare/workers && npm install
 
       - name: Deploy to Cloudflare Workers
         run: npx wrangler deploy --env production
@@ -41,7 +41,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: cd cloudflare/pages && npm ci
+        run: cd cloudflare/pages && npm install
 
       - name: Build
         run: cd cloudflare/pages && npm run build
